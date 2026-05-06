@@ -26,19 +26,23 @@ class Term {
 ## -----------------------------------------------------------------------------
 
 class Env :isa(Term) {
-    field $bindings :param :reader;
+    field $parent :param :reader = undef;
+    field $local  :param :reader;
 
     method lookup ($sym) {
-        $bindings->{ $sym->raw }
+        $local->{ $sym->raw }
+            // (defined $parent
+                ? $parent->lookup($sym)
+                : die "Could not find symbol(${sym}) in env");
     }
 
     method to_string {
         sprintf '(env %s)'
             => (join ', ' =>
-                map  { sprintf '%s: %s' => $_, $bindings->{$_}->to_string }
-                grep { !($bindings->{$_} isa Procedure) }
+                map  { sprintf '%s: %s' => $_, $local->{$_}->to_string }
+                grep { !($local->{$_} isa Procedure) }
                 sort { $a cmp $b }
-                keys %$bindings)
+                keys %$local)
     }
 }
 
@@ -146,13 +150,13 @@ class Allocator {
     }
 
     method List (@items) {
-        say ">> LIST ", join ', ' => map $_->to_string, @items;
+        #say ">> LIST ", join ', ' => map $_->to_string, @items;
         my $list = $self->Nil;
         while (@items) {
-            say "... LIST! ", $list->to_string;
+            #say "... LIST! ", $list->to_string;
             $list = $self->Cons( pop @items, $list );
         }
-        say "<< LIST ", $list->to_string;
+        #say "<< LIST ", $list->to_string;
         return $list;
     }
 
@@ -171,9 +175,17 @@ class Allocator {
         $terms{ $hash } //= Procedure->new( body => $b, hash => $hash, %opts )
     }
 
-    method Env (%bindings) {
-        my $hash = Env->hash_of( map { $_, $bindings{$_}->hash  } sort { $a cmp $b } keys %bindings );
-        $terms{ $hash } //= Env->new( bindings => \%bindings, hash => $hash )
+    method Env (@args) {
+        my $parent;
+        if (blessed $args[0] && $args[0] isa Env) {
+            $parent = shift @args;
+        }
+        my %local = @args;
+        my $hash = Env->hash_of(
+            (defined $parent ? $parent->hash : '*ROOT-ENV*'),
+            map { $_, $local{$_}->hash  } sort { $a cmp $b } keys %local
+        );
+        $terms{ $hash } //= Env->new( parent => $parent, local => \%local, hash => $hash )
     }
 }
 
@@ -182,12 +194,25 @@ class Allocator {
 class Interpreter {
     field $alloc :param :reader;
 
+    field $current_env;
+    field @history;
+
+    method init_env ($env) {
+        $current_env = $env;
+        @history     = ();
+    }
+
+    method define ($sym, $value) {
+        $current_env = $alloc->Env()
+    }
+
     method run ($env, @exprs) {
+        $self->init_env($env);
 
         my @statements;
         while (@exprs) {
             my $expr = shift @exprs;
-            push @statements => $self->eval( $expr, $env );
+            push @statements => $self->eval( $expr, $current_env );
             #given ($statements[-1]) {}
         }
 
@@ -225,21 +250,21 @@ class Interpreter {
                     $param = $param->tail;
                     $arg   = $arg->tail;
                 }
-                $self->eval( $call->body, $alloc->Env( $env->bindings->%*, %params ) )
+                $self->eval( $call->body, $alloc->Env( $env, %params ) )
             }
             when ('Lambda') {
                 my %params;
                 my $arg   = $args;
                 my $param = $call->params;
                 until ($param->is_nil && $arg->is_nil) {
-                    say '>> PARAM >> ', $param->head;
-                    say '>>   ARG >> ', $arg->head;
+                    #say '>> PARAM >> ', $param->head;
+                    #say '>>   ARG >> ', $arg->head;
                     $params{ $param->head->raw } = $self->eval( $arg->head, $env );
                     $param = $param->tail;
                     $arg   = $arg->tail;
                 }
-                say '& LAMBDA ', $call->to_string, ' w/  %ARGS ', join ', ' => map { sprintf '%s: %s' => $_, $params{$_}->to_string } keys %params;
-                $self->eval( $call->body, $alloc->Env( $env->bindings->%*, %params ) )
+                say '  ->& ', $call->to_string, ' w/  %ARGS ', join ', ' => map { sprintf '%s: %s' => $_, $params{$_}->to_string } keys %params;
+                $self->eval( $call->body, $alloc->Env( $env, %params ) )
             }
             when ('Procedure') {
                 my @args;
@@ -248,7 +273,7 @@ class Interpreter {
                     push @args => $call->is_applicative ? $self->eval($args->head, $env) : $args->head;
                     $args = $args->tail;
                 }
-                say '& #PROC ', $call->to_string, ' w/ @ARGS ', join ', ' => map $_->to_string, @args;
+                say '  ->& ', $call->to_string, ' w/ @ARGS ', join ', ' => map $_->to_string, @args;
                 $call->body->( @args );
             }
             default { Carp::confess "WTF is a $call doing here!" }
