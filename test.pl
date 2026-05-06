@@ -194,14 +194,15 @@ class Allocator {
 class Interpreter {
     field $alloc :param :reader;
 
-    field $current_env;
-    field @history;
+    field $current_env :reader;
+    field @env_history :reader;
 
     ADJUST {
         $current_env = $alloc->Env();
     }
 
     method bind (%bindings) {
+        push @env_history => $current_env->hash;
         $current_env = $alloc->Env( $current_env, %bindings )
     }
 
@@ -214,6 +215,7 @@ class Interpreter {
             #given ($statements[-1]) {}
         }
 
+        push @env_history => $current_env->hash;
         return pop @statements;
     }
 
@@ -355,6 +357,8 @@ say $i->run( $p->parse(q[
     ((lambda (n m) (mul n m)) 10 20)
 
 ]));
+
+say $_ foreach $i->env_history;
 
 ## -----------------------------------------------------------------------------
 
