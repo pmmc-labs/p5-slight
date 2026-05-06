@@ -197,17 +197,15 @@ class Interpreter {
     field $current_env;
     field @history;
 
-    method init_env ($env) {
-        $current_env = $env;
-        @history     = ();
+    ADJUST {
+        $current_env = $alloc->Env();
     }
 
-    method define ($sym, $value) {
-        $current_env = $alloc->Env()
+    method bind (%bindings) {
+        $current_env = $alloc->Env( $current_env, %bindings )
     }
 
-    method run ($env, @exprs) {
-        $self->init_env($env);
+    method run (@exprs) {
 
         my @statements;
         while (@exprs) {
@@ -338,7 +336,7 @@ my sub eqp ($n, $m) { $n->hash eq $m->hash ? $a->True : $a->False }
 
 my sub lambda ($e, $p, $b) { $a->Lambda($p, $b, $e) }
 
-my $env = $a->Env(
+$i->bind(
     'eq?' => $a->Procedure( \&eqp, is_applicative => true ),
     'add' => $a->Procedure( \&add, is_applicative => true ),
     'sub' => $a->Procedure( \&sub, is_applicative => true ),
@@ -350,7 +348,7 @@ my $env = $a->Env(
 );
 
 
-say $i->run( $env, $p->parse(q[
+say $i->run( $p->parse(q[
 
     ((lambda (n m) (add n m)) 10 20)
 
