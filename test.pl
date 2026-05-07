@@ -55,7 +55,7 @@ class Literal :isa(Term) {
 }
 class Num     :isa(Literal) {}
 class Sym     :isa(Literal) {}
-class Bool    :isa(Literal) {}
+class Bool    :isa(Literal) { method to_string { $self->raw ? 'true' : 'false' } }
 
 class Pair :isa(Term) {
     field $first  :param :reader;
@@ -194,29 +194,13 @@ class Allocator {
 class Interpreter {
     field $alloc :param :reader;
 
-    field $current_env :reader;
-    field @env_history :reader;
-
-    ADJUST {
-        $current_env = $alloc->Env();
-    }
-
-    method bind (%bindings) {
-        push @env_history => $current_env->hash;
-        $current_env = $alloc->Env( $current_env, %bindings )
-    }
-
-    method run (@exprs) {
-
-        my @statements;
-        while (@exprs) {
-            my $expr = shift @exprs;
-            push @statements => $self->eval( $expr, $current_env );
-            #given ($statements[-1]) {}
+    method run ($exprs, $env) {
+        my $result;
+        while (@$exprs) {
+            my $expr = shift @$exprs;
+            $result = $self->eval( $expr, $env );
         }
-
-        push @env_history => $current_env->hash;
-        return pop @statements;
+        return $result;
     }
 
     method eval ($expr, $env) {
@@ -312,6 +296,9 @@ class Parser {
                 when (/^\d+$/) {
                     push $stack[-1]->@*, $alloc->Num($token);
                 }
+                when (/^(true|false)$/) {
+                    push $stack[-1]->@*, $token eq 'true' ? $alloc->True : $alloc->False;
+                }
                 default {
                     push $stack[-1]->@*, $alloc->Sym($token);
                 }
@@ -336,31 +323,58 @@ my sub mod ($n, $m) { $a->Num( $n->raw % $m->raw ) }
 
 my sub eqp ($n, $m) { $n->hash eq $m->hash ? $a->True : $a->False }
 
+my sub atomp ($n) { $n isa Literal  ? $a->True : $a->False }
+my sub nilp  ($n) { $n isa Nil      ? $a->True : $a->False }
+
+my sub car ($l) { $l->head }
+my sub cdr ($l) { $l->tail }
+
+my sub cons ($h, $t) { $a->Cons( $h, $t ) }
+
 my sub lambda ($e, $p, $b) { $a->Lambda($p, $b, $e) }
 
-$i->bind(
-    'eq?' => $a->Procedure( \&eqp, is_applicative => true ),
-    'add' => $a->Procedure( \&add, is_applicative => true ),
-    'sub' => $a->Procedure( \&sub, is_applicative => true ),
-    'mul' => $a->Procedure( \&mul, is_applicative => true ),
-    'div' => $a->Procedure( \&div, is_applicative => true ),
-    'mod' => $a->Procedure( \&mod, is_applicative => true ),
+my sub quote ($e, $l) { $l }
 
+my sub cond ($e, @cases) {
+    while (@cases) {
+        my $case   = shift @cases;
+        my $cond   = $case->head;
+        my $action = $case->tail->head;
+        my $result = $i->eval($cond, $e);
+        if ($result isa Bool && $result->raw == true) {
+            return $i->eval($action, $e);
+        }
+    }
+    return $a->Nil;
+}
+
+my $env = $a->Env(
+    'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
+    'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
+    'eq?'    => $a->Procedure( \&eqp,   is_applicative => true ),
+
+    'cond'   => $a->Procedure( \&cond,   is_operative => true ),
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
+    'quote'  => $a->Procedure( \&quote,  is_operative => true ),
+
+    'cons'   => $a->Procedure( \&cons, is_applicative => true ),
+    'car'    => $a->Procedure( \&car,  is_applicative => true ),
+    'cdr'    => $a->Procedure( \&cdr,  is_applicative => true ),
+
+    'add'    => $a->Procedure( \&add, is_applicative => true ),
+    'sub'    => $a->Procedure( \&sub, is_applicative => true ),
+    'mul'    => $a->Procedure( \&mul, is_applicative => true ),
+    'div'    => $a->Procedure( \&div, is_applicative => true ),
+    'mod'    => $a->Procedure( \&mod, is_applicative => true ),
 );
 
 
-say $i->run( $p->parse(q[
+say $i->run([$p->parse(q[
 
-    ((lambda (n m) (add n m)) 10 20)
+    (cons (quote x) (cons 10 20))
 
-    ((lambda (n m) (mul n m)) 10 20)
+])], $env);
 
-]));
-
-say $_ foreach $i->env_history;
 
 ## -----------------------------------------------------------------------------
-
-
 
