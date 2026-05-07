@@ -85,16 +85,25 @@ class Callable :isa(Term) {
     field $body   :param :reader;
     field $env    :param :reader;
 
+    method is_operative   { ... }
+    method is_applicative { ... }
+
     method to_string { ... }
 }
 
 class FExpr :isa(Callable) {
+    method is_operative   { true }
+    method is_applicative { false }
+
     method to_string {
         sprintf '(fexpr %s %s)' => $self->params->to_string, $self->body->to_string;
     }
 }
 
 class Lambda :isa(Callable) {
+    method is_operative   { false }
+    method is_applicative { true }
+
     method to_string {
         sprintf '(lambda %s %s)' => $self->params->to_string, $self->body->to_string;
     }
@@ -191,13 +200,79 @@ class Allocator {
 
 ## -----------------------------------------------------------------------------
 
-class Interpreter {
+class Parser {
     field $alloc :param :reader;
 
-    method run ($exprs, $env) {
+    field @stack;
+
+    ADJUST {
+        push @stack => +[];
+    }
+
+    method tokenizer ($source) {
+        grep !/^\s*$/, split /(\(|\)|\s)/ => $source;
+    }
+
+    method parse ($source) {
+        my @tokens = $self->tokenizer($source);
+        while (@tokens) {
+            my $token = shift @tokens;
+            given ($token) {
+                when ('(') {
+                    push @stack => +[];
+                }
+                when (')') {
+                    my $list = pop @stack;
+                    push $stack[-1]->@*, $alloc->List($list->@*);
+                }
+                when (/^\d+$/) {
+                    push $stack[-1]->@*, $alloc->Num($token);
+                }
+                when ('nil') {
+                    push $stack[-1]->@*, $alloc->Nil;
+                }
+                when ('true') {
+                    push $stack[-1]->@*, $alloc->True;
+                }
+                when ('false') {
+                    push $stack[-1]->@*, $alloc->False;
+                }
+                default {
+                    push $stack[-1]->@*, $alloc->Sym($token);
+                }
+            }
+        }
+        return $stack[-1]->@*;
+    }
+
+}
+
+## -----------------------------------------------------------------------------
+
+class Interpreter {
+    field $alloc   :param :reader = undef;
+    field $parser  :param :reader = undef;
+
+    field @environment;
+
+    ADJUST {
+        $alloc  //= Allocator->new;
+        $parser //= Parser->new( alloc => $alloc );
+    }
+
+    method current_env { $environment[-1] }
+
+    method init (%bindings) {
+        push @environment => $alloc->Env(%bindings);
+        return $self;
+    }
+
+    method run ($source) {
+        my @exprs = $parser->parse($source);
+        my $env   = $environment[-1];
         my $result;
-        while (@$exprs) {
-            my $expr = shift @$exprs;
+        while (@exprs) {
+            my $expr = shift @exprs;
             $result = $self->eval( $expr, $env );
         }
         say '<< RETURN ', $result;
@@ -266,59 +341,152 @@ class Interpreter {
 
 ## -----------------------------------------------------------------------------
 
+class Machine {
+    field $alloc  :param :reader = undef;
+    field $parser :param :reader = undef;
 
-class Parser {
-    field $alloc :param :reader;
-
-    field @stack;
+    field @queue;
+    field @environment;
 
     ADJUST {
-        push @stack => +[];
+        $alloc   //= Allocator->new;
+        $parser  //= Parser->new( alloc => $alloc );
     }
 
-    method tokenizer ($source) {
-        grep !/^\s*$/, split /(\(|\)|\s)/ => $source;
+    method current_env { $environment[-1] }
+
+    method init (%bindings) {
+        push @environment => $alloc->Env(%bindings);
+        return $self;
     }
 
-    method parse ($source) {
-        my @tokens = $self->tokenizer($source);
-        while (@tokens) {
-            my $token = shift @tokens;
-            given ($token) {
-                when ('(') {
-                    push @stack => +[];
+    method run ($source) {
+        my @exprs = $parser->parse($source);
+        my $env   = $environment[-1];
+        return $self->execute(\@exprs, $env);
+    }
+
+    method execute ($exprs, $env) {
+        push @queue =>
+            [ HALT => $env ],
+            reverse map {
+                [ DROP      => $env ],
+                [ EVAL_EXPR => $env, $_ ]
+            } @$exprs;
+
+        while (@queue) {
+            my $next = pop @queue;
+            say '+//TICK// ', join ', ' => @$next;
+            my ($op, $env, @stack) = @$next;
+            given ($op) {
+                when ('JUST') {
+                    $queue[-1]->[1] = $env;
+                    push $queue[-1]->@* => @stack;
                 }
-                when (')') {
-                    my $list = pop @stack;
-                    push $stack[-1]->@*, $alloc->List($list->@*);
+                when ('DROP') {
+                    $queue[-1]->[1] = $env;
+                    # drop the stack ...
                 }
-                when (/^\d+$/) {
-                    push $stack[-1]->@*, $alloc->Num($token);
+                when ('HALT') {
+                    return @stack;
                 }
-                when ('nil') {
-                    push $stack[-1]->@*, $alloc->Nil;
-                }
-                when ('true') {
-                    push $stack[-1]->@*, $alloc->True;
-                }
-                when ('false') {
-                    push $stack[-1]->@*, $alloc->False;
+                when ('ERROR') {
+                    die "ERROR! - ", map $_->to_string, @stack
                 }
                 default {
-                    push $stack[-1]->@*, $alloc->Sym($token);
+                    push @queue => $self->step( $next );
                 }
             }
         }
-        return $stack[-1]->@*;
     }
 
+    method eval ($expr, $env) {
+        say '> EVAL ', $expr->to_string;
+        given (blessed $expr) {
+            when ('Cons') {
+                return [ EVAL_HEAD => $env, $expr ];
+            }
+            when ('Sym') {
+                my $val = $env->lookup($expr);
+                return $val
+                    ? [ JUST  => $env, $val ]
+                    : [ ERROR => $env, $alloc->Sym("Unable to find $expr in Env") ]
+            }
+            default {
+                return [ JUST => $env, $expr ]
+            }
+        }
+    }
+
+    method step ($step) {
+        my ($op, $env, @rest) = $step->@*;
+        given ($op) {
+            when ('EVAL_EXPR') {
+                my ($expr) = @rest;
+                return $self->eval( $expr, $env );
+            }
+            when ('EVAL_HEAD') {
+                my ($expr) = @rest;
+                return [ APPLY_EXPR => $env, $expr->tail ],
+                            $self->eval( $expr->head, $env );
+            }
+            when ('EVAL_ARGS') {
+                my ($expr, @stack) = @rest;
+                if ($expr->is_nil) {
+                    return [ JUST => $env, @stack ];
+                }
+                else {
+                    return [ EVAL_ARGS => $env, $expr->tail, @stack ],
+                                $self->eval( $expr->head, $env );
+                }
+            }
+            when ('APPLY_EXPR') {
+                my ($args, $call) = @rest;
+                if ($call->is_applicative) {
+                    return [ APPLY     => $env, $call ],
+                           [ EVAL_ARGS => $env, $args ];
+                } else {
+                    my @args = ($env);
+                    until ($args->is_nil) {
+                        push @args => $args->head;
+                        $args = $args->tail;
+                    }
+                    return [ APPLY => $env, $call, @args ];
+                }
+            }
+            when ('APPLY') {
+                my ($call, @args) = @rest;
+                given (blessed $call) {
+                    when ('Procedure') {
+                        say '!!! CALLING ', $call, ' w/ ', join ', ' => map $_->to_string, @args;
+                        return [ JUST => $env, $call->body->( @args ) ];
+                    }
+                    when (/^(Lambda|FExpr)$/) {
+                        my %local;
+                        my $params = $call->params;
+                        until ($params->is_nil) {
+                            $local{ $params->head->raw } = shift @args;
+                            $params = $params->tail;
+                        }
+                        return [ EVAL_EXPR => $alloc->Env( $call->env, %local ), $call->body ];
+                    }
+                    default {
+                        die $call;
+                    }
+                }
+            }
+            default {
+                die "ERROR! - Uurecognized op ${op}";
+            }
+        }
+    }
 }
 
 ## -----------------------------------------------------------------------------
 
-my $a = Allocator->new;
-my $p = Parser->new( alloc => $a );
-my $i = Interpreter->new( alloc => $a );
+#my $i = Interpreter->new;
+my $i = Machine->new;
+my $a = $i->alloc;
 
 my sub add ($n, $m) { $a->Num( $n->raw + $m->raw ) }
 my sub sub ($n, $m) { $a->Num( $n->raw - $m->raw ) }
@@ -371,7 +539,7 @@ my sub cond ($e, @cases) {
 
 my sub _eval ($e, $expr) { $i->eval($expr, $e) }
 
-my $env = $a->Env(
+$i->init(
     'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
     'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
     'eq?'    => $a->Procedure( \&eqp,   is_applicative => true ),
@@ -379,9 +547,9 @@ my $env = $a->Env(
     'cond'   => $a->Procedure( \&cond,   is_operative => true ),
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
-    'list'   => $a->Procedure( \&list,   is_operative => true ),
-    'eval'   => $a->Procedure( \&_eval,  is_operative => true ),
+    'eval!'  => $a->Procedure( \&_eval,  is_operative => true ),
 
+    'list'   => $a->Procedure( \&list,  is_applicative => true ),
     'cons'   => $a->Procedure( \&cons,  is_applicative => true ),
 
     'car'    => $a->Procedure( \&car,   is_applicative => true ),
@@ -408,11 +576,11 @@ my $env = $a->Env(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
+say $i->run(q[
 
-say $i->run([$p->parse(q[
+    ((lambda (x y) (+ x y)) 10 20)
 
-
-])], $env);
+]);
 
 
 ## -----------------------------------------------------------------------------
