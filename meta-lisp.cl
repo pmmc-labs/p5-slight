@@ -1,20 +1,15 @@
-
-;; cons
-;; car
-;; cdr
-;; quote
-;; atom
-;; eq
-;; lambda
-;; cond
-
+;; -----------------------------------------------------------------------------
+;; meta-circular LISP interpreter
+;; -----------------------------------------------------------------------------
+;; - derived from LISP from Nothing by Nils Holm
+;; -----------------------------------------------------------------------------
 
 ;; find value of x in e
-((lookup
+(lookup
     (lambda (x e)
-        (cond ((eq nil e) nil)
-              ((eq x (caar e)) (cadar e))
-              (t (lookup x (cdr e))))))
+        (cond ((eq? nil e       ) nil)
+              ((eq? x   (caar e)) (cadar e))
+              (true (lookup x (cdr e))))))
 
 ;; evaluate cond
 (evcon
@@ -85,7 +80,8 @@
             ((eq (caar x) (quote lambda))
                 (xeval (cadr (cdar x))
                        (bind (cadar x) (cdr x) e)))
-        ))))
+        )))
+
 
 (xeval (quote form) nil)
 

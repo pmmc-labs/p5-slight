@@ -241,8 +241,6 @@ class Interpreter {
                 my $arg   = $args;
                 my $param = $call->params;
                 until ($param->is_nil && $arg->is_nil) {
-                    #say '>> PARAM >> ', $param->head;
-                    #say '>>   ARG >> ', $arg->head;
                     $params{ $param->head->raw } = $self->eval( $arg->head, $env );
                     $param = $param->tail;
                     $arg   = $arg->tail;
@@ -296,8 +294,14 @@ class Parser {
                 when (/^\d+$/) {
                     push $stack[-1]->@*, $alloc->Num($token);
                 }
-                when (/^(true|false)$/) {
-                    push $stack[-1]->@*, $token eq 'true' ? $alloc->True : $alloc->False;
+                when ('nil') {
+                    push $stack[-1]->@*, $alloc->Nil;
+                }
+                when ('true') {
+                    push $stack[-1]->@*, $alloc->True;
+                }
+                when ('false') {
+                    push $stack[-1]->@*, $alloc->False;
                 }
                 default {
                     push $stack[-1]->@*, $alloc->Sym($token);
@@ -321,6 +325,13 @@ my sub mul ($n, $m) { $a->Num( $n->raw * $m->raw ) }
 my sub div ($n, $m) { $a->Num( $n->raw / $m->raw ) }
 my sub mod ($n, $m) { $a->Num( $n->raw % $m->raw ) }
 
+my sub num_eq ($n, $m) { $a->Num( $n->raw == $m->raw ) }
+my sub num_ne ($n, $m) { $a->Num( $n->raw != $m->raw ) }
+my sub num_gt ($n, $m) { $a->Num( $n->raw >  $m->raw ) }
+my sub num_lt ($n, $m) { $a->Num( $n->raw <  $m->raw ) }
+my sub num_ge ($n, $m) { $a->Num( $n->raw >= $m->raw ) }
+my sub num_le ($n, $m) { $a->Num( $n->raw <= $m->raw ) }
+
 my sub eqp ($n, $m) { $n->hash eq $m->hash ? $a->True : $a->False }
 
 my sub atomp ($n) { $n isa Literal  ? $a->True : $a->False }
@@ -328,6 +339,12 @@ my sub nilp  ($n) { $n isa Nil      ? $a->True : $a->False }
 
 my sub car ($l) { $l->head }
 my sub cdr ($l) { $l->tail }
+
+my sub caar  ($l) { $l->head->head }
+my sub cadr  ($l) { $l->head->tail }
+my sub cdar  ($l) { $l->tail->head }
+my sub cadar ($l) { $l->head->tail->head }
+my sub caddr ($l) { $l->head->tail->tail }
 
 my sub cons ($h, $t) { $a->Cons( $h, $t ) }
 
@@ -357,21 +374,35 @@ my $env = $a->Env(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
 
-    'cons'   => $a->Procedure( \&cons, is_applicative => true ),
-    'car'    => $a->Procedure( \&car,  is_applicative => true ),
-    'cdr'    => $a->Procedure( \&cdr,  is_applicative => true ),
+    'cons'   => $a->Procedure( \&cons,  is_applicative => true ),
 
-    'add'    => $a->Procedure( \&add, is_applicative => true ),
-    'sub'    => $a->Procedure( \&sub, is_applicative => true ),
-    'mul'    => $a->Procedure( \&mul, is_applicative => true ),
-    'div'    => $a->Procedure( \&div, is_applicative => true ),
-    'mod'    => $a->Procedure( \&mod, is_applicative => true ),
+    'car'    => $a->Procedure( \&car,   is_applicative => true ),
+    'cdr'    => $a->Procedure( \&cdr,   is_applicative => true ),
+
+    'caar'   => $a->Procedure( \&caar,  is_applicative => true ),
+    'cadr'   => $a->Procedure( \&cadr,  is_applicative => true ),
+    'cdar'   => $a->Procedure( \&cdar,  is_applicative => true ),
+    'cadar'  => $a->Procedure( \&cadar, is_applicative => true ),
+    'caddr'  => $a->Procedure( \&caddr, is_applicative => true ),
+
+    '+' => $a->Procedure( \&add, is_applicative => true ),
+    '-' => $a->Procedure( \&sub, is_applicative => true ),
+    '*' => $a->Procedure( \&mul, is_applicative => true ),
+    '/' => $a->Procedure( \&div, is_applicative => true ),
+    '%' => $a->Procedure( \&mod, is_applicative => true ),
+
+    '==' => $a->Procedure( \&num_eq, is_applicative => true ),
+    '!=' => $a->Procedure( \&num_ne, is_applicative => true ),
+    '>'  => $a->Procedure( \&num_gt, is_applicative => true ),
+    '<'  => $a->Procedure( \&num_lt, is_applicative => true ),
+    '>=' => $a->Procedure( \&num_ge, is_applicative => true ),
+    '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
 
 say $i->run([$p->parse(q[
 
-    (cons (quote x) (cons 10 20))
+    (> 10 20)
 
 ])], $env);
 
