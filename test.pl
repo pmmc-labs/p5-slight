@@ -369,6 +369,8 @@ my sub cond ($e, @cases) {
     return $a->Nil;
 }
 
+my sub _eval ($e, $expr) { $i->eval($expr, $e) }
+
 my $env = $a->Env(
     'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
     'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
@@ -378,6 +380,7 @@ my $env = $a->Env(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
     'list'   => $a->Procedure( \&list,   is_operative => true ),
+    'eval'   => $a->Procedure( \&_eval,  is_operative => true ),
 
     'cons'   => $a->Procedure( \&cons,  is_applicative => true ),
 
@@ -408,7 +411,6 @@ my $env = $a->Env(
 
 say $i->run([$p->parse(q[
 
-    (cddar (list 10 20 30))
 
 ])], $env);
 
