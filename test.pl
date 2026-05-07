@@ -200,6 +200,7 @@ class Interpreter {
             my $expr = shift @$exprs;
             $result = $self->eval( $expr, $env );
         }
+        say '<< RETURN ', $result;
         return $result;
     }
 
@@ -325,12 +326,12 @@ my sub mul ($n, $m) { $a->Num( $n->raw * $m->raw ) }
 my sub div ($n, $m) { $a->Num( $n->raw / $m->raw ) }
 my sub mod ($n, $m) { $a->Num( $n->raw % $m->raw ) }
 
-my sub num_eq ($n, $m) { $a->Num( $n->raw == $m->raw ) }
-my sub num_ne ($n, $m) { $a->Num( $n->raw != $m->raw ) }
-my sub num_gt ($n, $m) { $a->Num( $n->raw >  $m->raw ) }
-my sub num_lt ($n, $m) { $a->Num( $n->raw <  $m->raw ) }
-my sub num_ge ($n, $m) { $a->Num( $n->raw >= $m->raw ) }
-my sub num_le ($n, $m) { $a->Num( $n->raw <= $m->raw ) }
+my sub num_eq ($n, $m) { $n->raw == $m->raw ? $a->True : $a->False }
+my sub num_ne ($n, $m) { $n->raw != $m->raw ? $a->True : $a->False }
+my sub num_gt ($n, $m) { $n->raw >  $m->raw ? $a->True : $a->False }
+my sub num_lt ($n, $m) { $n->raw <  $m->raw ? $a->True : $a->False }
+my sub num_ge ($n, $m) { $n->raw >= $m->raw ? $a->True : $a->False }
+my sub num_le ($n, $m) { $n->raw <= $m->raw ? $a->True : $a->False }
 
 my sub eqp ($n, $m) { $n->hash eq $m->hash ? $a->True : $a->False }
 
@@ -345,10 +346,13 @@ my sub cadr  ($l) { $l->head->tail }
 my sub cdar  ($l) { $l->tail->head }
 my sub cadar ($l) { $l->head->tail->head }
 my sub caddr ($l) { $l->head->tail->tail }
+my sub cddar ($l) { $l->tail->tail->head }
 
 my sub cons ($h, $t) { $a->Cons( $h, $t ) }
 
 my sub lambda ($e, $p, $b) { $a->Lambda($p, $b, $e) }
+
+my sub list ($e, @items) { $a->List(@items) }
 
 my sub quote ($e, $l) { $l }
 
@@ -373,6 +377,7 @@ my $env = $a->Env(
     'cond'   => $a->Procedure( \&cond,   is_operative => true ),
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
+    'list'   => $a->Procedure( \&list,   is_operative => true ),
 
     'cons'   => $a->Procedure( \&cons,  is_applicative => true ),
 
@@ -384,6 +389,7 @@ my $env = $a->Env(
     'cdar'   => $a->Procedure( \&cdar,  is_applicative => true ),
     'cadar'  => $a->Procedure( \&cadar, is_applicative => true ),
     'caddr'  => $a->Procedure( \&caddr, is_applicative => true ),
+    'cddar'  => $a->Procedure( \&cddar, is_applicative => true ),
 
     '+' => $a->Procedure( \&add, is_applicative => true ),
     '-' => $a->Procedure( \&sub, is_applicative => true ),
@@ -402,7 +408,7 @@ my $env = $a->Env(
 
 say $i->run([$p->parse(q[
 
-    (> 10 20)
+    (cddar (list 10 20 30))
 
 ])], $env);
 
