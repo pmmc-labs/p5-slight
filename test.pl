@@ -56,7 +56,11 @@ class Literal :isa(Term) {
 }
 class Num     :isa(Literal) {}
 class Sym     :isa(Literal) {}
-class Bool    :isa(Literal) { method to_string { $self->raw ? 'true' : 'false' } }
+class Bool    :isa(Literal) {
+    method is_true  {  $self->raw }
+    method is_false { !$self->raw }
+    method to_string { $self->raw ? 'true' : 'false' }
+}
 
 class Pair :isa(Term) {
     field $first  :param :reader;
@@ -85,6 +89,9 @@ class Cons :isa(List) {
         }
         return @list;
     }
+
+    method first  { $head }
+    method second { $tail->head }
 
     method to_string {
         sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons;
@@ -310,12 +317,17 @@ class Interpreter {
     sub Drop ($env)         { [ DROP, $env ] }
     sub Just ($env, @stack) { [ JUST, $env, @stack ] }
 
+    # expects Value on stack
     sub Bind ($env, $sym) { [ BIND, $env, $sym ] }
+
+    # expects condition result on stack
+    sub Cond ($env, $if_true, @rest) { [ COND, $env, $if_true, @rest ] }
 
     sub EvalExpr ($env, $expr)          { [ EVAL_EXPR, $env, $expr ] }
     sub EvalHead ($env, $list)          { [ EVAL_HEAD, $env, $list ] }
     sub EvalArgs ($env, $args, @evaled) { [ EVAL_ARGS, $env, $args, @evaled ] }
 
+    # expects call on stack
     sub ApplyExpr ($env, $args)        { [ APPLY_EXPR, $env, $args ] }
     sub ApplyCall ($env, $call, @args) { [ APPLY_CALL, $env, $call, @args ] }
 
@@ -336,8 +348,9 @@ class Interpreter {
             say '=' x 80;
             say sprintf '%80s' => join ' / ' => reverse map { $_->[0] } @queue;
             my $next = pop @queue;
-            say sprintf '@TICK:%05d [ %s ]', $tick, join ' ' => @$next;
+            say sprintf '@TICK:%05d [ %s ]', $tick, join ', ' => @$next;
             my ($op, $env, @stack) = @$next;
+            say '%%%%%%%%% STACK => ', join ', ' => map $_->to_string, @stack;
             given ($op) {
                 when (JUST) {
                     $queue[-1]->[1] = $env;
@@ -351,6 +364,21 @@ class Interpreter {
                     my ($sym, $term) = @stack;
                     my %local = ($sym->raw, $term);
                     push @queue => Just( $alloc->Env( $env, %local ), $alloc->Nil );
+                }
+                when (COND) {
+                    my $result = pop @stack;
+                    if ($result isa Bool && $result->is_true) {
+                        my $action = shift @stack;
+                        push @queue => EvalExpr( $env, $action );
+                    } else {
+                        shift @stack; # drop the if-true action
+                        if (@stack) {
+                            my ($next, @rest) = @stack;
+                            push @queue =>
+                                Cond( $env, $next->second, @rest ),
+                                EvalExpr( $env, $next->first );
+                        }
+                    }
                 }
                 when (HALT) {
                     return @stack;
@@ -423,11 +451,10 @@ class Interpreter {
                 my ($call, @args) = @rest;
                 given (blessed $call) {
                     when ('Procedure') {
-                        #say '!!! CALLING ', $call, ' w/ ', join ', ' => map $_->to_string, @args;
                         if ($call->is_operative) {
                             return $call->body->( @args );
                         } else {
-                            return Just( $call->body->( @args ) );
+                            return Just( $env, $call->body->( @args ) );
                         }
                     }
                     when (/^(Lambda|FExpr)$/) {
@@ -487,18 +514,24 @@ my sub cddar ($l) { $l->tail->tail->head }
 my sub cons ($h, $t) { $a->Cons( $h, $t ) }
 my sub list (@items) { $a->List(@items) }
 
-my sub quote  ($E, $l)     { Interpreter::Just( $E, $l ) }
-my sub lambda ($E, $p, $b) { Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) ) }
-
+my sub quote  ($E, $l)          { Interpreter::Just( $E, $l ) }
+my sub lambda ($E, $p, $b)      { Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) ) }
 my sub define ($E, $sym, $expr) {
     return Interpreter::Bind( $E, $sym ),
            Interpreter::EvalExpr( $E, $expr );
+}
+
+my sub cond ($E, $first, @rest) {
+    my ($cond, $if_true) = $first->uncons;
+    return Interpreter::Cond( $E, $if_true, @rest ),
+           Interpreter::EvalExpr( $E, $cond )
 }
 
 $i->init(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
     'define' => $a->Procedure( \&define, is_operative => true ),
+    'cond'   => $a->Procedure( \&cond,   is_operative => true ),
     # predicates
     'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
     'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
@@ -533,9 +566,12 @@ $i->init(
 
 say $i->run(q[
 
-    (define foo 10)
+    (define x 30)
 
-    (+ foo 20)
+    (cond
+        ((eq? x 10) 20)
+        ((eq? x 20) 10)
+        (true 100))
 
 ]);
 
