@@ -110,6 +110,8 @@ class Callable :isa(Term) {
 }
 
 class FExpr :isa(Callable) {
+    field $name :param :reader;
+
     method is_operative   { true }
     method is_applicative { false }
 
@@ -119,6 +121,8 @@ class FExpr :isa(Callable) {
 }
 
 class Lambda :isa(Callable) {
+    field $name :param :reader;
+
     method is_operative   { false }
     method is_applicative { true }
 
@@ -184,14 +188,14 @@ class Allocator {
         return $list;
     }
 
-    method Lambda ($p, $b, $e) {
-        my $hash = Lambda->hash_of( $p->hash, $b->hash, $e->hash );
-        $terms{ $hash } //= Lambda->new( params => $p, body => $b, env => $e, hash => $hash )
+    method Lambda ($p, $b, $e, $name=undef) {
+        my $hash = Lambda->hash_of( $p->hash, $b->hash, $e->hash, (defined $name ? $name->hash : ()) );
+        $terms{ $hash } //= Lambda->new( params => $p, body => $b, env => $e, name => $name, hash => $hash )
     }
 
-    method FExpr ($p, $b, $e) {
-        my $hash = FExpr->hash_of( $p->hash, $b->hash, $e->hash );
-        $terms{ $hash } //= FExpr->new( params => $p, body => $b, env => $e, hash => $hash )
+    method FExpr ($p, $b, $e, $name=undef) {
+        my $hash = FExpr->hash_of( $p->hash, $b->hash, $e->hash, (defined $name ? $name->hash : ()) );
+        $terms{ $hash } //= FExpr->new( params => $p, body => $b, env => $e, name => $name, hash => $hash )
     }
 
     method Procedure ($b, %opts) {
@@ -348,9 +352,9 @@ class Interpreter {
             say '=' x 80;
             say sprintf '%80s' => join ' / ' => reverse map { $_->[0] } @queue;
             my $next = pop @queue;
-            say sprintf '@TICK:%05d [ %s ]', $tick, join ', ' => @$next;
+            say sprintf '@TICK:%05d [ %s ]', $tick, join ', ' => $next->@[ 0, 1 ];
             my ($op, $env, @stack) = @$next;
-            say '%%%%%: STACK => ', join ', ' => map $_->to_string, @stack;
+            say '  %% STACK => ', join ', ' => map $_->to_string, @stack;
             given ($op) {
                 when (JUST) {
                     $queue[-1]->[1] = $env;
@@ -401,7 +405,7 @@ class Interpreter {
             }
             when ('Sym') {
                 my $val = $env->lookup($expr);
-                return $val
+                return defined $val
                     ? Just($env, $val)
                     : Error($env, $alloc->Sym("Unable to find $expr in Env"))
             }
@@ -459,6 +463,9 @@ class Interpreter {
                     }
                     when (/^(Lambda|FExpr)$/) {
                         my %local;
+                        if (defined $call->name) {
+                            $local{ $call->name->raw } = $call;
+                        }
                         my $params = $call->params;
                         until ($params->is_nil) {
                             $local{ $params->head->raw } = shift @args;
@@ -514,11 +521,11 @@ my sub cddar ($l) { $l->tail->tail->head }
 my sub cons ($h, $t) { $a->Cons( $h, $t ) }
 my sub list (@items) { $a->List(@items) }
 
-my sub quote  ($E, $l)          { Interpreter::Just( $E, $l ) }
-my sub lambda ($E, $p, $b)      { Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) ) }
-my sub define ($E, $sym, $expr) {
+my sub quote  ($E, $l)           { Interpreter::Just( $E, $l ) }
+my sub lambda ($E, $p, $b)       { Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) ) }
+my sub defun  ($E, $sym, $p, $b) {
     return Interpreter::Bind( $E, $sym ),
-           Interpreter::EvalExpr( $E, $expr );
+           Interpreter::EvalExpr( $E, $a->Lambda( $p, $b, $E, $sym ) );
 }
 
 my sub cond ($E, $first, @rest) {
@@ -530,7 +537,7 @@ my sub cond ($E, $first, @rest) {
 $i->init(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
-    'define' => $a->Procedure( \&define, is_operative => true ),
+    'defun'  => $a->Procedure( \&defun, is_operative => true ),
     'cond'   => $a->Procedure( \&cond,   is_operative => true ),
     # predicates
     'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
@@ -566,12 +573,11 @@ $i->init(
 
 say $i->run(q[
 
-    (define x 30)
+    (defun fact (n)
+        (cond ((== n 0) 1)
+               (true    (* n (fact (- n 1))))))
 
-    (cond
-        ((eq? x 10) 20)
-        ((eq? x 20) 10)
-        (true 100))
+    (fact 10)
 
 ]);
 
