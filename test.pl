@@ -116,7 +116,7 @@ class FExpr :isa(Callable) {
     method is_applicative { false }
 
     method to_string {
-        sprintf '(fexpr %s %s)' => $self->params->to_string, $self->body->to_string;
+        sprintf '(<fexpr> %s %s)' => $self->params->to_string, $self->body->to_string;
     }
 }
 
@@ -127,7 +127,7 @@ class Lambda :isa(Callable) {
     method is_applicative { true }
 
     method to_string {
-        sprintf '(lambda %s %s)' => $self->params->to_string, $self->body->to_string;
+        sprintf '(<lambda> %s %s)' => $self->params->to_string, $self->body->to_string;
     }
 }
 
@@ -272,6 +272,8 @@ class Interpreter {
     field $alloc  :param :reader = undef;
     field $parser :param :reader = undef;
 
+    field $tick = 0;
+
     field @queue;
     field @environment;
 
@@ -328,7 +330,7 @@ class Interpreter {
     sub Cond ($env, $if_true, @rest) { [ COND, $env, $if_true, @rest ] }
 
     sub EvalExpr ($env, $expr)          { [ EVAL_EXPR, $env, $expr ] }
-    sub EvalHead ($env, $list)          { [ EVAL_HEAD, $env, $list ] }
+    sub EvalHead ($env, $list)          { [ EVAL_HEAD, $env, $list->head, $list->tail ] }
     sub EvalArgs ($env, $args, @evaled) { [ EVAL_ARGS, $env, $args, @evaled ] }
 
     # expects call on stack
@@ -345,16 +347,13 @@ class Interpreter {
                 EvalExpr($env, $_)
             } @$exprs;
 
-        my $tick = 0;
+
 
         while (@queue) {
             $tick++;
-            say '=' x 80;
-            say sprintf '%80s' => join ' / ' => reverse map { $_->[0] } @queue;
             my $next = pop @queue;
-            say sprintf '@TICK:%05d [ %s ]', $tick, join ', ' => $next->@[ 0, 1 ];
             my ($op, $env, @stack) = @$next;
-            say '  %% STACK => ', join ', ' => map $_->to_string, @stack;
+            say sprintf '%05d | %-10s | %6s | %s', $tick, $op, substr($env->hash, 0, 6), join ', ' => map $_->to_string, @stack;
             given ($op) {
                 when (JUST) {
                     $queue[-1]->[1] = $env;
@@ -367,7 +366,13 @@ class Interpreter {
                 when (BIND) {
                     my ($sym, $term) = @stack;
                     my %local = ($sym->raw, $term);
-                    push @queue => Just( $alloc->Env( $env, %local ), $alloc->Nil );
+                    my $local = $alloc->Env( $env, %local );
+                    push @queue => Just( $local, $alloc->Nil );
+                    say sprintf '%05d |%s|' => $tick, ('-' x 21);
+                    say sprintf '%05d | ENV (%s -> %s)' => $tick, substr($env->hash, 0, 6), substr($local->hash, 0, 6);
+                    say sprintf '%05d |    +{%s : %s}' => $tick, $_, $local{$_}
+                        foreach sort { $a cmp $b } keys %local;
+                    say sprintf '%05d |%s|' => $tick, ('-' x 21);
                 }
                 when (COND) {
                     my $result = pop @stack;
@@ -398,7 +403,6 @@ class Interpreter {
     }
 
     method eval ($expr, $env) {
-        say '  >> EVAL ', $expr->to_string;
         given (blessed $expr) {
             when ('Cons') {
                 return EvalHead($env, $expr);
@@ -417,16 +421,15 @@ class Interpreter {
 
     method step ($step) {
         my ($op, $env, @rest) = $step->@*;
-        say sprintf '  ++ STEP(%s) ' => $op;
         given ($op) {
             when (EVAL_EXPR) {
                 my ($expr) = @rest;
                 return $self->eval( $expr, $env );
             }
             when (EVAL_HEAD) {
-                my ($list) = @rest;
-                return ApplyExpr( $env, $list->tail ),
-                       $self->eval( $list->head, $env );
+                my ($head, $rest) = @rest;
+                return ApplyExpr( $env, $rest ),
+                       $self->eval( $head, $env );
             }
             when (EVAL_ARGS) {
                 my ($expr, @stack) = @rest;
@@ -471,7 +474,13 @@ class Interpreter {
                             $local{ $params->head->raw } = shift @args;
                             $params = $params->tail;
                         }
-                        return EvalExpr( $alloc->Env( $call->env, %local ), $call->body );
+                        my $local = $alloc->Env( $call->env, %local );
+                        say sprintf '%05d |%s|' => $tick, ('-' x 21);
+                        say sprintf '%05d | ENV (%s -> %s)' => $tick, substr($env->hash, 0, 6), substr($local->hash, 0, 6);
+                        say sprintf '%05d |    +{%s : %s}' => $tick, $_, $local{$_}
+                            foreach sort { $a cmp $b } keys %local;
+                        say sprintf '%05d |%s|' => $tick, ('-' x 21);
+                        return EvalExpr( $local, $call->body );
                     }
                     default {
                         die $call;
@@ -571,6 +580,7 @@ $i->init(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
+
 say $i->run(q[
 
     (defun fact (n)
@@ -584,3 +594,22 @@ say $i->run(q[
 
 ## -----------------------------------------------------------------------------
 
+
+__END__
+
+
+
+(defun fib (n)
+    (cond
+        (
+            (< n 2)
+            n
+        )
+        (
+            true
+            (+ (fib (- n 2)) (fib (- n 1)))
+        )
+    )
+)
+
+    (fib 2)
