@@ -350,7 +350,7 @@ class Interpreter {
             my $next = pop @queue;
             say sprintf '@TICK:%05d [ %s ]', $tick, join ', ' => @$next;
             my ($op, $env, @stack) = @$next;
-            say '%%%%%%%%% STACK => ', join ', ' => map $_->to_string, @stack;
+            say '%%%%%: STACK => ', join ', ' => map $_->to_string, @stack;
             given ($op) {
                 when (JUST) {
                     $queue[-1]->[1] = $env;
