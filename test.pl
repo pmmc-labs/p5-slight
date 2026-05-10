@@ -20,7 +20,7 @@ class Term {
     method to_string { __CLASS__ }
 
     sub hash_of ($class, @args) {
-        Digest::MD5::md5_hex($class, @args);
+        Digest::MD5::md5_hex(join ':' => $class, @args);
     }
 }
 
@@ -31,15 +31,21 @@ class Env :isa(Term) {
     field $local  :param :reader;
 
     method lookup ($sym) {
-        $local->{ $sym->raw }
-            // (defined $parent
-                ? $parent->lookup($sym)
-                : die "Could not find symbol(${sym}) in env");
+        if (exists $local->{ $sym->raw }) {
+            return $local->{ $sym->raw };
+        } else {
+            if (defined $parent) {
+                return $parent->lookup($sym);
+            } else {
+                die "Could not find symbol(${sym}) in env";
+            }
+        }
     }
 
     method to_string {
-        sprintf '{%s}'
-            => (join ', ' =>
+        sprintf '%s:{%s}'
+            => substr($self->hash, 0, 6),
+               (join ', ' =>
                 map  { sprintf '%s: %s' => $_, $local->{$_}->to_string }
                 grep { !($local->{$_} isa Procedure) }
                 sort { $a cmp $b }
@@ -314,6 +320,9 @@ class Interpreter {
     use constant APPLY_EXPR => 'APPLY_EXPR';
     use constant APPLY_CALL => 'APPLY_CALL';
 
+    use constant ENTER_SCOPE => 'ENTER_SCOPE';
+    use constant LEAVE_SCOPE => 'LEAVE_SCOPE';
+
     ## -------------------------------------------------------------------------
 
     sub Error ($env, $error) { [ ERROR, $env, $error ] }
@@ -327,7 +336,7 @@ class Interpreter {
     sub Bind ($env, $sym) { [ BIND, $env, $sym ] }
 
     # expects condition result on stack
-    sub Cond ($env, $if_true, @rest) { [ COND, $env, $if_true, @rest ] }
+    sub Cond ($env, $if_true, $if_false) { [ COND, $env, $if_true, $if_false ] }
 
     sub EvalExpr ($env, $expr)          { [ EVAL_EXPR, $env, $expr ] }
     sub EvalHead ($env, $list)          { [ EVAL_HEAD, $env, $list->head, $list->tail ] }
@@ -336,6 +345,9 @@ class Interpreter {
     # expects call on stack
     sub ApplyExpr ($env, $args)        { [ APPLY_EXPR, $env, $args ] }
     sub ApplyCall ($env, $call, @args) { [ APPLY_CALL, $env, $call, @args ] }
+
+    sub EnterScope ($env) { [ ENTER_SCOPE, $env ] }
+    sub LeaveScope ($env) { [ LEAVE_SCOPE, $env ] }
 
     ## -------------------------------------------------------------------------
 
@@ -347,13 +359,11 @@ class Interpreter {
                 EvalExpr($env, $_)
             } @$exprs;
 
-
-
         while (@queue) {
             $tick++;
             my $next = pop @queue;
             my ($op, $env, @stack) = @$next;
-            say sprintf '%05d | %-10s | %6s | %s', $tick, $op, substr($env->hash, 0, 6), join ', ' => map $_->to_string, @stack;
+            #say sprintf '%05d | %-10s | %6s | %s', $tick, $op, substr($env->hash, 0, 6), join ', ' => map $_->to_string, @stack;
             given ($op) {
                 when (JUST) {
                     $queue[-1]->[1] = $env;
@@ -362,6 +372,10 @@ class Interpreter {
                 when (DROP) {
                     $queue[-1]->[1] = $env;
                     # drop the stack ...
+                }
+                when (LEAVE_SCOPE) {
+                    # drop the env ...
+                    push $queue[-1]->@* => @stack;
                 }
                 when (BIND) {
                     my ($sym, $term) = @stack;
@@ -376,17 +390,16 @@ class Interpreter {
                 }
                 when (COND) {
                     my $result = pop @stack;
+                    my ($if_true, $if_false) = @stack;
+                    say "FUCK!!!! ", join ', ' => $if_true, $if_false;
                     if ($result isa Bool && $result->is_true) {
-                        my $action = shift @stack;
-                        push @queue => EvalExpr( $env, $action );
+                        say "WE ARE TRUE!!!!!!";
+                        push @queue => EvalExpr( $env, $if_true );
+                        say "WE ARE TRUE (AFTER)!!!!!!";
                     } else {
-                        shift @stack; # drop the if-true action
-                        if (@stack) {
-                            my ($next, @rest) = @stack;
-                            push @queue =>
-                                Cond( $env, $next->second, @rest ),
-                                EvalExpr( $env, $next->first );
-                        }
+                        say "WE ARE FALSE!!!!!!";
+                        push @queue => EvalExpr( $env, $if_false );
+                        say "WE ARE FALSE (AFTER)!!!!!!";
                     }
                 }
                 when (HALT) {
@@ -399,6 +412,10 @@ class Interpreter {
                     push @queue => $self->step( $next );
                 }
             }
+
+            say '-' x 120;
+            say "QUEUE:\n  - ", join "\n  - " => map { join ', ' => @$_ } @queue;
+            say '-' x 120;
         }
     }
 
@@ -480,7 +497,8 @@ class Interpreter {
                         say sprintf '%05d |    +{%s : %s}' => $tick, $_, $local{$_}
                             foreach sort { $a cmp $b } keys %local;
                         say sprintf '%05d |%s|' => $tick, ('-' x 21);
-                        return EvalExpr( $local, $call->body );
+                        return LeaveScope( $env ),
+                               EvalExpr( $local, $call->body );
                     }
                     default {
                         die $call;
@@ -537,17 +555,16 @@ my sub defun  ($E, $sym, $p, $b) {
            Interpreter::EvalExpr( $E, $a->Lambda( $p, $b, $E, $sym ) );
 }
 
-my sub cond ($E, $first, @rest) {
-    my ($cond, $if_true) = $first->uncons;
-    return Interpreter::Cond( $E, $if_true, @rest ),
+my sub _if ($E, $cond, $if_true, $if_false) {
+    return Interpreter::Cond( $E, $if_true, $if_false ),
            Interpreter::EvalExpr( $E, $cond )
 }
 
 $i->init(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
     'quote'  => $a->Procedure( \&quote,  is_operative => true ),
-    'defun'  => $a->Procedure( \&defun, is_operative => true ),
-    'cond'   => $a->Procedure( \&cond,   is_operative => true ),
+    'defun'  => $a->Procedure( \&defun,  is_operative => true ),
+    'if'     => $a->Procedure( \&_if,    is_operative => true ),
     # predicates
     'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
     'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
@@ -580,14 +597,16 @@ $i->init(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
+# 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144
 
 say $i->run(q[
 
-    (defun fact (n)
-        (cond ((== n 0) 1)
-               (true    (* n (fact (- n 1))))))
+    (defun fib (n)
+        (if (< n 2) n
+            (+ (fib (- n 2))
+               (fib (- n 1)) )))
 
-    (fact 10)
+        (fib 12)
 
 ]);
 
@@ -598,18 +617,9 @@ say $i->run(q[
 __END__
 
 
+    (defun fact (n)
+        (if (== n 0) 1
+            (* n (fact (- n 1)))))
 
-(defun fib (n)
-    (cond
-        (
-            (< n 2)
-            n
-        )
-        (
-            true
-            (+ (fib (- n 2)) (fib (- n 1)))
-        )
-    )
-)
 
     (fib 2)
