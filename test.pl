@@ -1,5 +1,7 @@
 
 use v5.42;
+use utf8;
+use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
 use Data::Dumper ();
@@ -351,6 +353,98 @@ class Interpreter {
 
     ## -------------------------------------------------------------------------
 
+    use constant DEBUG       => exists $ENV{DEBUG} ? $ENV{DEBUG}+0 : 0;
+    use constant DEBUG_STEP  => DEBUG >= 1 || !!$ENV{DEBUG_STEP};
+    use constant DEBUG_BIND  => DEBUG >= 2 || !!$ENV{DEBUG_BIND};
+    use constant DEBUG_CALL  => DEBUG >= 2 || !!$ENV{DEBUG_CALL};
+    use constant DEBUG_QUEUE => DEBUG >= 3 || !!$ENV{DEBUG_QUEUE};
+
+    my sub hex2rgb ($hex) {
+        map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2))
+    }
+
+    my sub opcode2rgb ($op) {
+        return hex2rgb("FCC200") if $op eq ERROR;
+        return hex2rgb("DF73FF") if $op eq HALT;
+        return hex2rgb("5A4FCF") if $op eq YIELD;
+        return hex2rgb("00A86B") if $op eq JUST;
+        return hex2rgb("4CBB17") if $op eq DROP;
+        return hex2rgb("26619C") if $op eq COND;
+        return hex2rgb("880085") if $op eq BIND;
+        return hex2rgb("FFA343") if $op eq EVAL_EXPR;
+        return hex2rgb("B784A7") if $op eq EVAL_HEAD;
+        return hex2rgb("1C39BB") if $op eq EVAL_ARGS;
+        return hex2rgb("8E3A59") if $op eq APPLY_EXPR;
+        return hex2rgb("E25098") if $op eq APPLY_CALL;
+        return hex2rgb("0F52BA") if $op eq ENTER_SCOPE;
+        return hex2rgb("FFCC00") if $op eq LEAVE_SCOPE;
+    }
+
+    my sub debug_queue ($tick, @queue) {
+        say '─' x 120;
+        say "QUEUE ╭",('─' x 113),"\n      ├─",
+            (join "\n      ├─" =>
+             map {
+                my ($op, $env, @rest) = $_->@*;
+                sprintf "\e[38;2;%s;m %-11s \e[38;2;%s;m %6s \e[0m %s" =>
+                    (join ';' => opcode2rgb($op)),
+                    $op,
+                    (join ';' => hex2rgb($env->hash)),
+                    substr($env->hash, 0, 6),
+                    join ', ' => @rest;
+
+            }
+            @queue),
+            "\n      ╰",('─' x 113);
+        say '─' x 120;
+    }
+
+    my sub debug_step ($tick, $op, $env, @stack) {
+        say sprintf "\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+            (join ';' => 120),
+            $tick,
+            (join ';' => opcode2rgb($op)),
+            $op,
+            (join ';' => hex2rgb($env->hash)),
+            substr($env->hash, 0, 6),
+            join ', ' => map $_->to_string, @stack;
+    }
+
+    my sub debug_new_env ($tick, $env, $local, %local) {
+        say sprintf "\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
+        say sprintf "\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+                        (join ';' => 120),
+                        $tick,
+                        (join ';' => hex2rgb($env->hash)),
+                        substr($env->hash, 0, 6),
+                        (join ';' => hex2rgb($local->hash)),
+                        substr($local->hash, 0, 6);
+        say sprintf "\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+            foreach sort { $a cmp $b } keys %local;
+        say sprintf "\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
+    }
+
+    my sub debug_bind ($tick, $env, $local, %local) {
+        debug_new_env($tick, $env, $local, %local)
+    }
+
+    my sub debug_call ($tick, $env, $local, %local) {
+        debug_new_env($tick, $env, $local, %local)
+    }
+
+
+    ## -------------------------------------------------------------------------
+
+    method thread_computation ($env, @stack) {
+        # append this stack to the previous opcode
+        push $queue[-1]->@* => @stack;
+        # and pass on the environment, ....unless
+        # it is a LEAVE_SCOPE opcode, in which case,
+        # we will preserve it's environment and
+        # not overwrite it
+        $queue[-1]->[1] = $env unless $queue[-1]->[0] eq LEAVE_SCOPE;
+    }
+
     method execute ($exprs, $env) {
         push @queue =>
             Halt($env),
@@ -363,43 +457,40 @@ class Interpreter {
             $tick++;
             my $next = pop @queue;
             my ($op, $env, @stack) = @$next;
-            #say sprintf '%05d | %-10s | %6s | %s', $tick, $op, substr($env->hash, 0, 6), join ', ' => map $_->to_string, @stack;
+            DEBUG_STEP && debug_step($tick, $op, $env, @stack);
             given ($op) {
                 when (JUST) {
-                    $queue[-1]->[1] = $env;
-                    push $queue[-1]->@* => @stack;
+                    # append the stack ...
+                    $self->thread_computation($env, @stack);
                 }
                 when (DROP) {
-                    $queue[-1]->[1] = $env;
                     # drop the stack ...
+                    $self->thread_computation($env);
+                }
+                when (ENTER_SCOPE) {
+                    # TODO - add `defer` support
+                    #... but do nothing for now
                 }
                 when (LEAVE_SCOPE) {
-                    # drop the env ...
-                    push $queue[-1]->@* => @stack;
+                    # ... pass the stack, and the
+                    # restore the upper/older env
+                    # TODO - handle `defer`s
+                    $self->thread_computation($env, @stack);
                 }
                 when (BIND) {
                     my ($sym, $term) = @stack;
                     my %local = ($sym->raw, $term);
                     my $local = $alloc->Env( $env, %local );
                     push @queue => Just( $local, $alloc->Nil );
-                    say sprintf '%05d |%s|' => $tick, ('-' x 21);
-                    say sprintf '%05d | ENV (%s -> %s)' => $tick, substr($env->hash, 0, 6), substr($local->hash, 0, 6);
-                    say sprintf '%05d |    +{%s : %s}' => $tick, $_, $local{$_}
-                        foreach sort { $a cmp $b } keys %local;
-                    say sprintf '%05d |%s|' => $tick, ('-' x 21);
+                    DEBUG_BIND && debug_bind($tick, $env, $local, %local);
                 }
                 when (COND) {
                     my $result = pop @stack;
                     my ($if_true, $if_false) = @stack;
-                    say "FUCK!!!! ", join ', ' => $if_true, $if_false;
                     if ($result isa Bool && $result->is_true) {
-                        say "WE ARE TRUE!!!!!!";
                         push @queue => EvalExpr( $env, $if_true );
-                        say "WE ARE TRUE (AFTER)!!!!!!";
                     } else {
-                        say "WE ARE FALSE!!!!!!";
                         push @queue => EvalExpr( $env, $if_false );
-                        say "WE ARE FALSE (AFTER)!!!!!!";
                     }
                 }
                 when (HALT) {
@@ -413,9 +504,7 @@ class Interpreter {
                 }
             }
 
-            say '-' x 120;
-            say "QUEUE:\n  - ", join "\n  - " => map { join ', ' => @$_ } @queue;
-            say '-' x 120;
+            DEBUG_QUEUE && debug_queue($tick, @queue);
         }
     }
 
@@ -492,13 +581,10 @@ class Interpreter {
                             $params = $params->tail;
                         }
                         my $local = $alloc->Env( $call->env, %local );
-                        say sprintf '%05d |%s|' => $tick, ('-' x 21);
-                        say sprintf '%05d | ENV (%s -> %s)' => $tick, substr($env->hash, 0, 6), substr($local->hash, 0, 6);
-                        say sprintf '%05d |    +{%s : %s}' => $tick, $_, $local{$_}
-                            foreach sort { $a cmp $b } keys %local;
-                        say sprintf '%05d |%s|' => $tick, ('-' x 21);
+                        DEBUG_CALL && debug_call($tick, $env, $local, %local);
                         return LeaveScope( $env ),
-                               EvalExpr( $local, $call->body );
+                               EvalExpr( $local, $call->body ),
+                               EnterScope( $env );
                     }
                     default {
                         die $call;
@@ -597,16 +683,18 @@ $i->init(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
-# 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144
+
 
 say $i->run(q[
 
-    (defun fib (n)
-        (if (< n 2) n
-            (+ (fib (- n 2))
-               (fib (- n 1)) )))
 
-        (fib 12)
+    (defun fact (n)
+        (if (== n 0) 1
+            (* n (fact (- n 1)))))
+
+
+
+    (fact 6)
 
 ]);
 
@@ -617,9 +705,8 @@ say $i->run(q[
 __END__
 
 
-    (defun fact (n)
-        (if (== n 0) 1
-            (* n (fact (- n 1)))))
-
-
-    (fib 2)
+# 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144
+(defun fib (n)
+        (if (< n 2) n
+            (+ (fib (- n 2))
+               (fib (- n 1)) )))
