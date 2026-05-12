@@ -11,6 +11,8 @@ use Scalar::Util ();
 use Sub::Util    ();
 
 ## -----------------------------------------------------------------------------
+## Terms
+## -----------------------------------------------------------------------------
 
 class Term {
     use overload '""' => 'to_string';
@@ -26,7 +28,9 @@ class Term {
     }
 }
 
-## -----------------------------------------------------------------------------
+## ------------------------------------
+## Environment
+## ------------------------------------
 
 class Env :isa(Term) {
     field $parent :param :reader = undef;
@@ -55,7 +59,9 @@ class Env :isa(Term) {
     }
 }
 
-## -----------------------------------------------------------------------------
+## ------------------------------------
+## Literal Values
+## ------------------------------------
 
 class Literal :isa(Term) {
     field $raw :param :reader;
@@ -69,6 +75,10 @@ class Bool    :isa(Literal) {
     method is_false { !$self->raw }
     method to_string { $self->raw ? 'true' : 'false' }
 }
+
+## ------------------------------------
+## Containers
+## ------------------------------------
 
 class Pair :isa(Term) {
     field $first  :param :reader;
@@ -105,6 +115,10 @@ class Cons :isa(List) {
         sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons;
     }
 }
+
+## ------------------------------------
+## Callables
+## ------------------------------------
 
 class Callable :isa(Term) {
     field $params :param :reader;
@@ -149,6 +163,8 @@ class Procedure :isa(Term) {
     }
 }
 
+## -----------------------------------------------------------------------------
+## Allocator
 ## -----------------------------------------------------------------------------
 
 class Allocator {
@@ -226,6 +242,8 @@ class Allocator {
 }
 
 ## -----------------------------------------------------------------------------
+## Parser
+## -----------------------------------------------------------------------------
 
 class Parser {
     field $alloc :param :reader;
@@ -237,14 +255,27 @@ class Parser {
     }
 
     method tokenizer ($source) {
-        grep !/^\s*$/, split /(\(|\)|\s)/ => $source;
+        if ($source =~ /\;/) {
+            $source =~ s/\;.*\n//g;
+        }
+        grep !/^\s*$/, split /(\'\(|\(|\)|\s)/ => $source;
     }
 
     method parse ($source) {
         my @tokens = $self->tokenizer($source);
         while (@tokens) {
+
             my $token = shift @tokens;
+            if ($token =~ /^\'[^\(]/) {
+                $token =~ s/^\'//;
+                push @stack => +[ $alloc->Sym('quote') ];
+                unshift @tokens => ')';
+            }
+
             given ($token) {
+                when ('\'(') {
+                    push @stack => +[ $alloc->Sym('quote') ];
+                }
                 when ('(') {
                     push @stack => +[];
                 }
@@ -275,6 +306,8 @@ class Parser {
 }
 
 ## -----------------------------------------------------------------------------
+## Interpreter
+## -----------------------------------------------------------------------------
 
 class Interpreter {
     field $alloc  :param :reader = undef;
@@ -297,13 +330,9 @@ class Interpreter {
         return $self;
     }
 
-    method run ($source) {
-        my @exprs = $parser->parse($source);
-        my $env   = $environment[-1];
-        return $self->execute(\@exprs, $env);
-    }
-
-    ## -------------------------------------------------------------------------
+    ## ------------------------------------------
+    ## Continuations
+    ## ------------------------------------------
 
     use constant ERROR      => 'ERROR';
     use constant HALT       => 'HALT';
@@ -325,7 +354,7 @@ class Interpreter {
     use constant ENTER_SCOPE => 'ENTER_SCOPE';
     use constant LEAVE_SCOPE => 'LEAVE_SCOPE';
 
-    ## -------------------------------------------------------------------------
+    ## Continuation constructors
 
     sub Error ($env, $error) { [ ERROR, $env, $error ] }
     sub Halt  ($env)         { [ HALT,  $env ] }
@@ -351,7 +380,9 @@ class Interpreter {
     sub EnterScope ($env) { [ ENTER_SCOPE, $env ] }
     sub LeaveScope ($env) { [ LEAVE_SCOPE, $env ] }
 
-    ## -------------------------------------------------------------------------
+    ## ------------------------------------------
+    ## Debugging routines
+    ## ------------------------------------------
 
     use constant DEBUG       => exists $ENV{DEBUG} ? $ENV{DEBUG}+0 : 0;
     use constant DEBUG_STEP  => DEBUG >= 1 || !!$ENV{DEBUG_STEP};
@@ -400,6 +431,9 @@ class Interpreter {
     }
 
     my sub debug_step ($depth, $tick, $op, $env, @stack) {
+        if ($tick == 1) {
+            say sprintf "      ╭─────────────┬────────╮";
+        }
         if ($op eq LEAVE_SCOPE) {
             say sprintf "%s      ╭─┴─────────────┴────────╯",
                 ($depth ? ('  ' x $depth) : '');
@@ -453,7 +487,15 @@ class Interpreter {
     }
 
 
-    ## -------------------------------------------------------------------------
+    ## ------------------------------------------
+    ## Evaluation ...
+    ## ------------------------------------------
+
+    method run ($source) {
+        my @exprs = $parser->parse($source);
+        my $env   = $environment[-1];
+        return $self->execute(\@exprs, $env);
+    }
 
     method thread_computation ($env, @stack) {
         # append this stack to the previous opcode
@@ -637,10 +679,13 @@ class Interpreter {
 }
 
 ## -----------------------------------------------------------------------------
+## Testing
+## -----------------------------------------------------------------------------
 
 my $i = Interpreter->new;
 my $a = $i->alloc;
 
+## Builtins
 my sub add ($n, $m) { $a->Num( $n->raw + $m->raw ) }
 my sub sub ($n, $m) { $a->Num( $n->raw - $m->raw ) }
 my sub mul ($n, $m) { $a->Num( $n->raw * $m->raw ) }
@@ -670,10 +715,16 @@ my sub caddr ($l) { $l->head->tail->tail }
 my sub cddar ($l) { $l->tail->tail->head }
 
 my sub cons ($h, $t) { $a->Cons( $h, $t ) }
-my sub list (@items) { $a->List(@items) }
+my sub list (@items) { $a->List( @items ) }
 
-my sub quote  ($E, $l)           { Interpreter::Just( $E, $l ) }
-my sub lambda ($E, $p, $b)       { Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) ) }
+my sub lambda ($E, $p, $b) {
+    Interpreter::Just( $E, $a->Lambda( $p, $b, $E ) )
+}
+
+my sub quote  ($E, @terms) {
+    Interpreter::Just( $E, (scalar @terms == 1) ? $terms[0] : $a->List(@terms) )
+}
+
 my sub defun  ($E, $sym, $p, $b) {
     return Interpreter::Bind( $E, $sym ),
            Interpreter::EvalExpr( $E, $a->Lambda( $p, $b, $E, $sym ) );
@@ -683,6 +734,8 @@ my sub _if ($E, $cond, $if_true, $if_false) {
     return Interpreter::Cond( $E, $if_true, $if_false ),
            Interpreter::EvalExpr( $E, $cond )
 }
+
+## define root environment
 
 $i->init(
     'lambda' => $a->Procedure( \&lambda, is_operative => true ),
@@ -721,18 +774,17 @@ $i->init(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
-
+## tests
 
 say $i->run(q[
 
 
-    (defun fact (n)
-        (if (== n 0) 1
-            (* n (fact (- n 1)))))
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
 
+(fact 6)
 
-
-    (fact 6)
 
 ]);
 
