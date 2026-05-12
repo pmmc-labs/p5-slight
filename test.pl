@@ -399,8 +399,17 @@ class Interpreter {
         say '─' x 120;
     }
 
-    my sub debug_step ($tick, $op, $env, @stack) {
-        say sprintf "\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+    my sub debug_step ($depth, $tick, $op, $env, @stack) {
+        if ($op eq LEAVE_SCOPE) {
+            say sprintf "%s      ╭─┴─────────────┴────────╯",
+                ($depth ? ('  ' x $depth) : '');
+        }
+        if ($op eq ENTER_SCOPE && DEBUG < 2) {
+            say sprintf "%s    ╰────────────────────────╮",
+                ($depth ? ('  ' x $depth) : '');
+        }
+        say sprintf "%s\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+            ($depth ? ('  ' x $depth) : ''),
             (join ';' => 120),
             $tick,
             (join ';' => opcode2rgb($op)),
@@ -408,28 +417,39 @@ class Interpreter {
             (join ';' => hex2rgb($env->hash)),
             substr($env->hash, 0, 6),
             join ', ' => map $_->to_string, @stack;
+        if ($op eq HALT) {
+            say sprintf "      ╰─────────────┴────────╯";
+        }
     }
 
-    my sub debug_new_env ($tick, $env, $local, %local) {
-        say sprintf "\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
-        say sprintf "\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+    my sub debug_bind ($depth, $tick, $env, $local, %local) {
+        my $indent = ($depth ? ('  ' x $depth) : '');
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
                         (join ';' => 120),
                         $tick,
                         (join ';' => hex2rgb($env->hash)),
                         substr($env->hash, 0, 6),
                         (join ';' => hex2rgb($local->hash)),
                         substr($local->hash, 0, 6);
-        say sprintf "\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
             foreach sort { $a cmp $b } keys %local;
-        say sprintf "\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
     }
 
-    my sub debug_bind ($tick, $env, $local, %local) {
-        debug_new_env($tick, $env, $local, %local)
-    }
-
-    my sub debug_call ($tick, $env, $local, %local) {
-        debug_new_env($tick, $env, $local, %local)
+    my sub debug_call ($depth, $tick, $env, $local, %local) {
+        my $indent = ($depth ? ('  ' x $depth) : '');
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+                        (join ';' => 120),
+                        $tick,
+                        (join ';' => hex2rgb($env->hash)),
+                        substr($env->hash, 0, 6),
+                        (join ';' => hex2rgb($local->hash)),
+                        substr($local->hash, 0, 6);
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+            foreach sort { $a cmp $b } keys %local;
+        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m╰%s╮" => (join ';' => 120), $tick, ('─' x 24);
     }
 
 
@@ -457,7 +477,13 @@ class Interpreter {
             $tick++;
             my $next = pop @queue;
             my ($op, $env, @stack) = @$next;
-            DEBUG_STEP && debug_step($tick, $op, $env, @stack);
+            DEBUG_STEP && debug_step(
+                (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
+                $tick,
+                $op,
+                $env,
+                @stack
+            );
             given ($op) {
                 when (JUST) {
                     # append the stack ...
@@ -482,7 +508,13 @@ class Interpreter {
                     my %local = ($sym->raw, $term);
                     my $local = $alloc->Env( $env, %local );
                     push @queue => Just( $local, $alloc->Nil );
-                    DEBUG_BIND && debug_bind($tick, $env, $local, %local);
+                    DEBUG_BIND && debug_bind(
+                        (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
+                        $tick,
+                        $env,
+                        $local,
+                        %local
+                    );
                 }
                 when (COND) {
                     my $result = pop @stack;
@@ -581,7 +613,13 @@ class Interpreter {
                             $params = $params->tail;
                         }
                         my $local = $alloc->Env( $call->env, %local );
-                        DEBUG_CALL && debug_call($tick, $env, $local, %local);
+                        DEBUG_BIND && debug_call(
+                            (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
+                            $tick,
+                            $env,
+                            $local,
+                            %local
+                        );
                         return LeaveScope( $env ),
                                EvalExpr( $local, $call->body ),
                                EnterScope( $env );
