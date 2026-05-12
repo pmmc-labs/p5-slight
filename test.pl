@@ -309,6 +309,116 @@ class Parser {
 ## Interpreter
 ## -----------------------------------------------------------------------------
 
+## ------------------------------------------
+## Debugging
+## ------------------------------------------
+
+use constant DEBUG       => exists $ENV{DEBUG} ? $ENV{DEBUG}+0 : 0;
+use constant DEBUG_STEP  => DEBUG >= 1 || !!$ENV{DEBUG_STEP};
+use constant DEBUG_BIND  => DEBUG >= 2 || !!$ENV{DEBUG_BIND};
+use constant DEBUG_CALL  => DEBUG >= 2 || !!$ENV{DEBUG_CALL};
+use constant DEBUG_QUEUE => DEBUG >= 3 || !!$ENV{DEBUG_QUEUE};
+
+my sub hex2rgb ($hex) {
+    map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2))
+}
+
+my sub opcode2rgb ($op) {
+    return hex2rgb("FCC200") if $op eq Interpreter->ERROR;
+    return hex2rgb("DF73FF") if $op eq Interpreter->HALT;
+    return hex2rgb("5A4FCF") if $op eq Interpreter->YIELD;
+    return hex2rgb("00A86B") if $op eq Interpreter->JUST;
+    return hex2rgb("4CBB17") if $op eq Interpreter->DROP;
+    return hex2rgb("26619C") if $op eq Interpreter->COND;
+    return hex2rgb("880085") if $op eq Interpreter->BIND;
+    return hex2rgb("FFA343") if $op eq Interpreter->EVAL_EXPR;
+    return hex2rgb("B784A7") if $op eq Interpreter->EVAL_HEAD;
+    return hex2rgb("1C39BB") if $op eq Interpreter->EVAL_ARGS;
+    return hex2rgb("8E3A59") if $op eq Interpreter->APPLY_EXPR;
+    return hex2rgb("E25098") if $op eq Interpreter->APPLY_CALL;
+    return hex2rgb("0F52BA") if $op eq Interpreter->ENTER_SCOPE;
+    return hex2rgb("FFCC00") if $op eq Interpreter->LEAVE_SCOPE;
+}
+
+my sub debug_queue ($tick, @queue) {
+    say '─' x 120;
+    say "QUEUE ╭",('─' x 113),"\n      ├─",
+        (join "\n      ├─" =>
+         map {
+            my ($op, $env, @rest) = $_->@*;
+            sprintf "\e[38;2;%s;m %-11s \e[38;2;%s;m %6s \e[0m %s" =>
+                (join ';' => opcode2rgb($op)),
+                $op,
+                (join ';' => hex2rgb($env->hash)),
+                substr($env->hash, 0, 6),
+                join ', ' => @rest;
+
+        }
+        @queue),
+        "\n      ╰",('─' x 113);
+    say '─' x 120;
+}
+
+my sub debug_step ($depth, $tick, $op, $env, @stack) {
+    if ($tick == 1) {
+        say sprintf "      ╭─────────────┬────────╮";
+    }
+    if ($op eq Interpreter->LEAVE_SCOPE) {
+        say sprintf "%s      ╭─┴─────────────┴────────╯",
+            ($depth ? ('  ' x $depth) : '');
+    }
+    if ($op eq Interpreter->ENTER_SCOPE && DEBUG < 2) {
+        say sprintf "%s    ╰────────────────────────╮",
+            ($depth ? ('  ' x $depth) : '');
+    }
+    say sprintf "%s\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+        ($depth ? ('  ' x $depth) : ''),
+        (join ';' => 120),
+        $tick,
+        (join ';' => opcode2rgb($op)),
+        $op,
+        (join ';' => hex2rgb($env->hash)),
+        substr($env->hash, 0, 6),
+        join ', ' => map $_->to_string, @stack;
+    if ($op eq Interpreter->HALT) {
+        say sprintf "      ╰─────────────┴────────╯";
+    }
+}
+
+my sub debug_bind ($depth, $tick, $env, $local, %local) {
+    my $indent = ($depth ? ('  ' x $depth) : '');
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+                    (join ';' => 120),
+                    $tick,
+                    (join ';' => hex2rgb($env->hash)),
+                    substr($env->hash, 0, 6),
+                    (join ';' => hex2rgb($local->hash)),
+                    substr($local->hash, 0, 6);
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+        foreach sort { $a cmp $b } keys %local;
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
+}
+
+my sub debug_call ($depth, $tick, $env, $local, %local) {
+    my $indent = ($depth ? ('  ' x $depth) : '');
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+                    (join ';' => 120),
+                    $tick,
+                    (join ';' => hex2rgb($env->hash)),
+                    substr($env->hash, 0, 6),
+                    (join ';' => hex2rgb($local->hash)),
+                    substr($local->hash, 0, 6);
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+        foreach sort { $a cmp $b } keys %local;
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m╰%s╮" => (join ';' => 120), $tick, ('─' x 24);
+}
+
+## ------------------------------------------
+## Interpreter ...
+## ------------------------------------------
+
 class Interpreter {
     field $alloc  :param :reader = undef;
     field $parser :param :reader = undef;
@@ -381,119 +491,20 @@ class Interpreter {
     sub LeaveScope ($env) { [ LEAVE_SCOPE, $env ] }
 
     ## ------------------------------------------
-    ## Debugging routines
-    ## ------------------------------------------
-
-    use constant DEBUG       => exists $ENV{DEBUG} ? $ENV{DEBUG}+0 : 0;
-    use constant DEBUG_STEP  => DEBUG >= 1 || !!$ENV{DEBUG_STEP};
-    use constant DEBUG_BIND  => DEBUG >= 2 || !!$ENV{DEBUG_BIND};
-    use constant DEBUG_CALL  => DEBUG >= 2 || !!$ENV{DEBUG_CALL};
-    use constant DEBUG_QUEUE => DEBUG >= 3 || !!$ENV{DEBUG_QUEUE};
-
-    my sub hex2rgb ($hex) {
-        map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2))
-    }
-
-    my sub opcode2rgb ($op) {
-        return hex2rgb("FCC200") if $op eq ERROR;
-        return hex2rgb("DF73FF") if $op eq HALT;
-        return hex2rgb("5A4FCF") if $op eq YIELD;
-        return hex2rgb("00A86B") if $op eq JUST;
-        return hex2rgb("4CBB17") if $op eq DROP;
-        return hex2rgb("26619C") if $op eq COND;
-        return hex2rgb("880085") if $op eq BIND;
-        return hex2rgb("FFA343") if $op eq EVAL_EXPR;
-        return hex2rgb("B784A7") if $op eq EVAL_HEAD;
-        return hex2rgb("1C39BB") if $op eq EVAL_ARGS;
-        return hex2rgb("8E3A59") if $op eq APPLY_EXPR;
-        return hex2rgb("E25098") if $op eq APPLY_CALL;
-        return hex2rgb("0F52BA") if $op eq ENTER_SCOPE;
-        return hex2rgb("FFCC00") if $op eq LEAVE_SCOPE;
-    }
-
-    my sub debug_queue ($tick, @queue) {
-        say '─' x 120;
-        say "QUEUE ╭",('─' x 113),"\n      ├─",
-            (join "\n      ├─" =>
-             map {
-                my ($op, $env, @rest) = $_->@*;
-                sprintf "\e[38;2;%s;m %-11s \e[38;2;%s;m %6s \e[0m %s" =>
-                    (join ';' => opcode2rgb($op)),
-                    $op,
-                    (join ';' => hex2rgb($env->hash)),
-                    substr($env->hash, 0, 6),
-                    join ', ' => @rest;
-
-            }
-            @queue),
-            "\n      ╰",('─' x 113);
-        say '─' x 120;
-    }
-
-    my sub debug_step ($depth, $tick, $op, $env, @stack) {
-        if ($tick == 1) {
-            say sprintf "      ╭─────────────┬────────╮";
-        }
-        if ($op eq LEAVE_SCOPE) {
-            say sprintf "%s      ╭─┴─────────────┴────────╯",
-                ($depth ? ('  ' x $depth) : '');
-        }
-        if ($op eq ENTER_SCOPE && DEBUG < 2) {
-            say sprintf "%s    ╰────────────────────────╮",
-                ($depth ? ('  ' x $depth) : '');
-        }
-        say sprintf "%s\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
-            ($depth ? ('  ' x $depth) : ''),
-            (join ';' => 120),
-            $tick,
-            (join ';' => opcode2rgb($op)),
-            $op,
-            (join ';' => hex2rgb($env->hash)),
-            substr($env->hash, 0, 6),
-            join ', ' => map $_->to_string, @stack;
-        if ($op eq HALT) {
-            say sprintf "      ╰─────────────┴────────╯";
-        }
-    }
-
-    my sub debug_bind ($depth, $tick, $env, $local, %local) {
-        my $indent = ($depth ? ('  ' x $depth) : '');
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
-                        (join ';' => 120),
-                        $tick,
-                        (join ';' => hex2rgb($env->hash)),
-                        substr($env->hash, 0, 6),
-                        (join ';' => hex2rgb($local->hash)),
-                        substr($local->hash, 0, 6);
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
-            foreach sort { $a cmp $b } keys %local;
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
-    }
-
-    my sub debug_call ($depth, $tick, $env, $local, %local) {
-        my $indent = ($depth ? ('  ' x $depth) : '');
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
-                        (join ';' => 120),
-                        $tick,
-                        (join ';' => hex2rgb($env->hash)),
-                        substr($env->hash, 0, 6),
-                        (join ';' => hex2rgb($local->hash)),
-                        substr($local->hash, 0, 6);
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
-            foreach sort { $a cmp $b } keys %local;
-        say sprintf "${indent}\e[38;2;%s;m%05d \e[0m╰%s╮" => (join ';' => 120), $tick, ('─' x 24);
-    }
-
-
-    ## ------------------------------------------
     ## Evaluation ...
     ## ------------------------------------------
 
     method run ($source) {
         my @exprs = $parser->parse($source);
         my $env   = $environment[-1];
+
+        push @queue =>
+            Halt($env),
+            reverse map {
+                Drop($env),
+                EvalExpr($env, $_)
+            } @exprs;
+
         return $self->execute(\@exprs, $env);
     }
 
@@ -508,18 +519,11 @@ class Interpreter {
     }
 
     method execute ($exprs, $env) {
-        push @queue =>
-            Halt($env),
-            reverse map {
-                Drop($env),
-                EvalExpr($env, $_)
-            } @$exprs;
-
         while (@queue) {
             $tick++;
             my $next = pop @queue;
             my ($op, $env, @stack) = @$next;
-            DEBUG_STEP && debug_step(
+            ::DEBUG_STEP && debug_step(
                 (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
                 $tick,
                 $op,
@@ -550,7 +554,7 @@ class Interpreter {
                     my %local = ($sym->raw, $term);
                     my $local = $alloc->Env( $env, %local );
                     push @queue => Just( $local, $alloc->Nil );
-                    DEBUG_BIND && debug_bind(
+                    ::DEBUG_BIND && debug_bind(
                         (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
                         $tick,
                         $env,
@@ -578,7 +582,7 @@ class Interpreter {
                 }
             }
 
-            DEBUG_QUEUE && debug_queue($tick, @queue);
+            ::DEBUG_QUEUE && debug_queue($tick, @queue);
         }
     }
 
@@ -655,7 +659,7 @@ class Interpreter {
                             $params = $params->tail;
                         }
                         my $local = $alloc->Env( $call->env, %local );
-                        DEBUG_BIND && debug_call(
+                        ::DEBUG_CALL && debug_call(
                             (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
                             $tick,
                             $env,
