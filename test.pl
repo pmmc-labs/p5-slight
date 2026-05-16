@@ -11,6 +11,18 @@ use Scalar::Util ();
 use Sub::Util    ();
 
 ## -----------------------------------------------------------------------------
+## TODO:
+## -----------------------------------------------------------------------------
+## - add HOST continuations
+## - add Effect system
+## - add REPL
+## -----------------------------------------------------------------------------
+## Misc. Cleanup
+## -----------------------------------------------------------------------------
+## - remove the Sub::Util stuff, add names for Procedure constructor
+## -----------------------------------------------------------------------------
+
+## -----------------------------------------------------------------------------
 ## Terms
 ## -----------------------------------------------------------------------------
 
@@ -70,6 +82,7 @@ class Literal :isa(Term) {
 }
 class Num     :isa(Literal) {}
 class Sym     :isa(Literal) {}
+class Str     :isa(Literal) {}
 class Bool    :isa(Literal) {
     method is_true  {  $self->raw }
     method is_false { !$self->raw }
@@ -192,6 +205,11 @@ class Allocator {
     method Sym ($s) {
         my $hash = Sym->hash_of($s);
         $terms{ $hash } //= Sym->new( raw => $s, hash => $hash )
+    }
+
+    method Str ($s) {
+        my $hash = Str->hash_of($s);
+        $terms{ $hash } //= Str->new( raw => $s, hash => $hash )
     }
 
     method Pair ($f, $s) {
@@ -326,7 +344,7 @@ my sub hex2rgb ($hex) {
 my sub opcode2rgb ($op) {
     return hex2rgb("FCC200") if $op eq Interpreter->ERROR;
     return hex2rgb("DF73FF") if $op eq Interpreter->HALT;
-    return hex2rgb("5A4FCF") if $op eq Interpreter->YIELD;
+    return hex2rgb("5A4FCF") if $op eq Interpreter->HOST;
     return hex2rgb("00A86B") if $op eq Interpreter->JUST;
     return hex2rgb("4CBB17") if $op eq Interpreter->DROP;
     return hex2rgb("26619C") if $op eq Interpreter->COND;
@@ -379,7 +397,7 @@ my sub debug_step ($depth, $tick, $op, $env, @stack) {
         $op,
         (join ';' => hex2rgb($env->hash)),
         substr($env->hash, 0, 6),
-        join ', ' => map $_->to_string, @stack;
+        join ', ' => map { blessed $_ ? $_->to_string : $_ } @stack;
     if ($op eq Interpreter->HALT) {
         say sprintf "      ╰─────────────┴────────╯";
     }
@@ -440,13 +458,18 @@ class Interpreter {
         return $self;
     }
 
+    method add_effect ($e) {
+        push @environment => $alloc->Env( $environment[-1], $e->provides->%* );
+        return $self;
+    }
+
     ## ------------------------------------------
     ## Continuations
     ## ------------------------------------------
 
     use constant ERROR      => 'ERROR';
     use constant HALT       => 'HALT';
-    use constant YIELD      => 'YIELD';
+    use constant HOST       => 'HOST';
 
     use constant JUST       => 'JUST';
     use constant DROP       => 'DROP';
@@ -466,9 +489,12 @@ class Interpreter {
 
     ## Continuation constructors
 
-    sub Error ($env, $error) { [ ERROR, $env, $error ] }
-    sub Halt  ($env)         { [ HALT,  $env ] }
-    sub Yield ($env)         { [ YIELD, $env ] }
+    sub Error ($env, $error)  { [ ERROR, $env, $error ] }
+    sub Halt  ($env)          { [ HALT,  $env ] }
+
+    sub Host  ($env, $effect, $action) {
+        [ HOST,  $env, $effect, $action ]
+    }
 
     sub Drop ($env)         { [ DROP, $env ] }
     sub Just ($env, @stack) { [ JUST, $env, @stack ] }
@@ -494,7 +520,7 @@ class Interpreter {
     ## Evaluation ...
     ## ------------------------------------------
 
-    method run ($source) {
+    method run ($source, %config) {
         my @exprs = $parser->parse($source);
         my $env   = $environment[-1];
 
@@ -505,7 +531,24 @@ class Interpreter {
                 EvalExpr($env, $_)
             } @exprs;
 
-        return $self->execute(\@exprs, $env);
+        my $result;
+        while (@queue) {
+            my ($op, $env, @rest) = $self->execute(\@exprs, $env)->@*;
+            given ($op) {
+                when (HOST) {
+                    my ($effect, $action, @args) = @rest;
+                    push @queue => $effect->handler($self, $action, $env, @args);
+                }
+                when (HALT) {
+                    ($result) = @rest;
+                }
+                when (ERROR) {
+                    die 'ERROR: '.(join ' ' => map $_->to_string, @rest);
+                }
+            }
+        }
+
+        return $result;
     }
 
     method thread_computation ($env, @stack) {
@@ -531,6 +574,15 @@ class Interpreter {
                 @stack
             );
             given ($op) {
+                when (HOST) {
+                    return $next;
+                }
+                when (HALT) {
+                    return $next;
+                }
+                when (ERROR) {
+                    return $next;
+                }
                 when (JUST) {
                     # append the stack ...
                     $self->thread_computation($env, @stack);
@@ -570,12 +622,6 @@ class Interpreter {
                     } else {
                         push @queue => EvalExpr( $env, $if_false );
                     }
-                }
-                when (HALT) {
-                    return @stack;
-                }
-                when (ERROR) {
-                    die "ERROR! - ", map $_->to_string, @stack
                 }
                 default {
                     push @queue => $self->step( $next );
@@ -682,6 +728,85 @@ class Interpreter {
     }
 }
 
+## ------------------------------------------
+## Effects ...
+## ------------------------------------------
+
+class Effect {
+    # handler ($host, $action, $env, @args)
+    #   - returning undef tells the machine to halt
+    #   - otherwise return an array of Kontinue objects to resume with
+    #
+    # provides ()
+    #   - returns an ARRAY ref of operative Callables to be added to the env
+    #
+    # cleanup ()
+    #   - optional cleanup hook called by Strand on exit/error/signal
+    #   - default is no-op, subclasses can override to release resources
+
+    method handler  ($, $, $, @) { ... }
+    method provides { +[] }
+    method cleanup  { () }
+
+    method to_string { sprintf '*{%s}' => __CLASS__ }
+}
+
+class TTY::Effect :isa(Effect) {
+    field $alloc  :param :reader;
+    field $input  :param :reader = \*STDIN;
+    field $output :param :reader = \*STDOUT;
+    field $error  :param :reader = \*STDERR;
+
+    method handler  ($inter, $action, $env, @args) {
+        given ($action) {
+            when ('print') {
+                $output->print( map $_->to_string, @args );
+                return Interpreter::Just($env, $alloc->Nil)
+            }
+            when ('say') {
+                $output->print( (map $_->to_string, @args), "\n" );
+                return Interpreter::Just($env, $alloc->Nil)
+            }
+            when ('warn') {
+                $error->print( (map $_->to_string, @args), "\n" );
+                return Interpreter::Just($env, $alloc->Nil)
+            }
+            when ('readline') {
+                my $line = $input->getline;
+                chomp $line;
+                return Interpreter::Just($env, $alloc->Str($line))
+            }
+        }
+    }
+
+    method provides {
+
+        my sub _print ($E, @args) {
+            return Interpreter::Host($E, $self, 'print'),
+                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+        }
+
+        my sub _warn ($E, @args) {
+            return Interpreter::Host($E, $self, 'warn'),
+                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+        }
+
+        my sub _say ($E, @args) {
+            return Interpreter::Host($E, $self, 'say'),
+                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+        }
+
+        my sub _readline ($E) { return Interpreter::Host($E, $self, 'readline') }
+
+        return +{
+            'print'    => $alloc->Procedure( \&_print,    is_operative => true ),
+            'say'      => $alloc->Procedure( \&_say,      is_operative => true ),
+            'warn'     => $alloc->Procedure( \&_warn,     is_operative => true ),
+            'readline' => $alloc->Procedure( \&_readline, is_operative => true ),
+        }
+    }
+}
+
 ## -----------------------------------------------------------------------------
 ## Testing
 ## -----------------------------------------------------------------------------
@@ -778,17 +903,15 @@ $i->init(
     '<=' => $a->Procedure( \&num_le, is_applicative => true ),
 );
 
+## add effects
+
+$i->add_effect( TTY::Effect->new( alloc => $a ) );
+
 ## tests
 
 say $i->run(q[
 
-
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(fact 6)
-
+(say 'Hello (readline))
 
 ]);
 
@@ -798,6 +921,13 @@ say $i->run(q[
 
 __END__
 
+
+
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
+
+(fact 6)
 
 # 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144
 (defun fib (n)
