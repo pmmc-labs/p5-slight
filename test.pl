@@ -82,7 +82,11 @@ class Literal :isa(Term) {
 }
 class Num     :isa(Literal) {}
 class Sym     :isa(Literal) {}
-class Str     :isa(Literal) {}
+class Str     :isa(Literal) {
+
+    method to_string { sprintf '"%s"' => $self->raw }
+}
+
 class Bool    :isa(Literal) {
     method is_true  {  $self->raw }
     method is_false { !$self->raw }
@@ -276,7 +280,7 @@ class Parser {
         if ($source =~ /\;/) {
             $source =~ s/\;.*\n//g;
         }
-        grep !/^\s*$/, split /(\'\(|\(|\)|\s)/ => $source;
+        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
     }
 
     method parse ($source) {
@@ -300,6 +304,9 @@ class Parser {
                 when (')') {
                     my $list = pop @stack;
                     push $stack[-1]->@*, $alloc->List($list->@*);
+                }
+                when (/^\"/) {
+                    push $stack[-1]->@*, $alloc->Str( substr($token, 1, -1) );
                 }
                 when (/^\d+$/) {
                     push $stack[-1]->@*, $alloc->Num($token);
@@ -397,7 +404,7 @@ my sub debug_step ($depth, $tick, $op, $env, @stack) {
         $op,
         (join ';' => hex2rgb($env->hash)),
         substr($env->hash, 0, 6),
-        join ', ' => map { blessed $_ ? $_->to_string : $_ } @stack;
+        join ', ' => map $_->to_string, @stack;
     if ($op eq Interpreter->HALT) {
         say sprintf "      ╰─────────────┴────────╯";
     }
@@ -733,21 +740,9 @@ class Interpreter {
 ## ------------------------------------------
 
 class Effect {
-    # handler ($host, $action, $env, @args)
-    #   - returning undef tells the machine to halt
-    #   - otherwise return an array of Kontinue objects to resume with
-    #
-    # provides ()
-    #   - returns an ARRAY ref of operative Callables to be added to the env
-    #
-    # cleanup ()
-    #   - optional cleanup hook called by Strand on exit/error/signal
-    #   - default is no-op, subclasses can override to release resources
-
-    method handler  ($, $, $, @) { ... }
-    method provides { +[] }
+    method handler  ($i, $a, $e, @a) { ... }
+    method provides { +{} }
     method cleanup  { () }
-
     method to_string { sprintf '*{%s}' => __CLASS__ }
 }
 
@@ -758,17 +753,17 @@ class TTY::Effect :isa(Effect) {
     field $error  :param :reader = \*STDERR;
 
     method handler  ($inter, $action, $env, @args) {
-        given ($action) {
+        given ($action->raw) {
             when ('print') {
-                $output->print( map $_->to_string, @args );
+                $output->print( map $_->raw, @args );
                 return Interpreter::Just($env, $alloc->Nil)
             }
             when ('say') {
-                $output->print( (map $_->to_string, @args), "\n" );
+                $output->print( (map $_->raw, @args), "\n" );
                 return Interpreter::Just($env, $alloc->Nil)
             }
             when ('warn') {
-                $error->print( (map $_->to_string, @args), "\n" );
+                $error->print( (map $_->raw, @args), "\n" );
                 return Interpreter::Just($env, $alloc->Nil)
             }
             when ('readline') {
@@ -780,23 +775,22 @@ class TTY::Effect :isa(Effect) {
     }
 
     method provides {
-
         my sub _print ($E, @args) {
-            return Interpreter::Host($E, $self, 'print'),
-                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+            return Interpreter::Host($E, $self, $alloc->Sym('print')),
+                   Interpreter::EvalArgs($E, $alloc->List(@args))
         }
 
         my sub _warn ($E, @args) {
-            return Interpreter::Host($E, $self, 'warn'),
-                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+            return Interpreter::Host($E, $self, $alloc->Sym('warn')),
+                   Interpreter::EvalArgs($E, $alloc->List(@args))
         }
 
         my sub _say ($E, @args) {
-            return Interpreter::Host($E, $self, 'say'),
-                   Interpreter::EvalArgs($E, (scalar @args == 1) ? $args[0] : $alloc->List(@args) )
+            return Interpreter::Host($E, $self, $alloc->Sym('say')),
+                   Interpreter::EvalArgs($E, $alloc->List(@args))
         }
 
-        my sub _readline ($E) { return Interpreter::Host($E, $self, 'readline') }
+        my sub _readline ($E) { return Interpreter::Host($E, $self, $alloc->Sym('readline')) }
 
         return +{
             'print'    => $alloc->Procedure( \&_print,    is_operative => true ),
@@ -827,6 +821,8 @@ my sub num_gt ($n, $m) { $n->raw >  $m->raw ? $a->True : $a->False }
 my sub num_lt ($n, $m) { $n->raw <  $m->raw ? $a->True : $a->False }
 my sub num_ge ($n, $m) { $n->raw >= $m->raw ? $a->True : $a->False }
 my sub num_le ($n, $m) { $n->raw <= $m->raw ? $a->True : $a->False }
+
+my sub concat ($n, $m) { $a->Str( $n->raw . $m->raw ) }
 
 my sub eqp ($n, $m) { $n->hash eq $m->hash ? $a->True : $a->False }
 
@@ -888,6 +884,8 @@ $i->init(
     'cadar'  => $a->Procedure( \&cadar, is_applicative => true ),
     'caddr'  => $a->Procedure( \&caddr, is_applicative => true ),
     'cddar'  => $a->Procedure( \&cddar, is_applicative => true ),
+    # strings
+    '~' => $a->Procedure( \&concat, is_applicative => true ),
     # maths
     '+' => $a->Procedure( \&add, is_applicative => true ),
     '-' => $a->Procedure( \&sub, is_applicative => true ),
@@ -911,7 +909,7 @@ $i->add_effect( TTY::Effect->new( alloc => $a ) );
 
 say $i->run(q[
 
-(say 'Hello (readline))
+(say (~ "Hello " (readline)))
 
 ]);
 
