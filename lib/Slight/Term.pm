@@ -93,6 +93,7 @@ class Slight::Term::List :isa(Slight::Term) {}
 class Slight::Term::Nil  :isa(Slight::Term::List) {
     method is_nil { true }
     method to_string { '()' }
+    method raw { () }
 }
 class Slight::Term::Cons :isa(Slight::Term::List) {
     field $head :param :reader;
@@ -114,6 +115,8 @@ class Slight::Term::Cons :isa(Slight::Term::List) {
     method to_string {
         sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons;
     }
+
+    method raw { $head, $tail->raw }
 }
 
 ## ------------------------------------

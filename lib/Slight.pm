@@ -14,6 +14,7 @@ use Slight::Allocator;
 use Slight::Effect;
 use Slight::Machine;
 use Slight::Parser;
+use Slight::Runtime;
 use Slight::Term;
 
 use if DEBUG => qw[ Slight::Tools::Debug ];
