@@ -64,10 +64,10 @@ class Slight::Effect::TTY :isa(Slight::Effect) {
         my sub _readline ($E) { return Slight::Machine::Host($E, $self, $alloc->Sym('readline')) }
 
         return +{
-            'print'    => $alloc->Procedure( \&_print,    is_operative => true ),
-            'say'      => $alloc->Procedure( \&_say,      is_operative => true ),
-            'warn'     => $alloc->Procedure( \&_warn,     is_operative => true ),
-            'readline' => $alloc->Procedure( \&_readline, is_operative => true ),
+            'print'    => $alloc->Procedure( $alloc->Sym('print'   ), \&_print,    is_operative => true ),
+            'say'      => $alloc->Procedure( $alloc->Sym('say'     ), \&_say,      is_operative => true ),
+            'warn'     => $alloc->Procedure( $alloc->Sym('warn'    ), \&_warn,     is_operative => true ),
+            'readline' => $alloc->Procedure( $alloc->Sym('readline'), \&_readline, is_operative => true ),
         }
     }
 }

@@ -70,9 +70,9 @@ class Slight::Allocator {
         $terms{ $hash } //= Slight::Term::FExpr->new( params => $p, body => $b, env => $e, name => $name, hash => $hash )
     }
 
-    method Procedure ($b, %opts) {
-        my $hash = Slight::Term::Procedure->hash_of( Sub::Util::subname($b) );
-        $terms{ $hash } //= Slight::Term::Procedure->new( body => $b, hash => $hash, %opts )
+    method Procedure ($n, $b, %opts) {
+        my $hash = Slight::Term::Procedure->hash_of( $n->hash );
+        $terms{ $hash } //= Slight::Term::Procedure->new( name => $n, body => $b, hash => $hash, %opts )
     }
 
     method Env (@args) {

@@ -4,9 +4,7 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
-use Digest::MD5  ();
-use Scalar::Util ();
-use Sub::Util    ();
+use Digest::MD5 ();
 
 ## -----------------------------------------------------------------------------
 ## Slight::Terms
@@ -156,12 +154,13 @@ class Slight::Term::Lambda :isa(Slight::Term::Callable) {
 }
 
 class Slight::Term::Procedure :isa(Slight::Term) {
+    field $name           :param :reader;
     field $body           :param :reader;
     field $is_operative   :param :reader = false;
     field $is_applicative :param :reader = false;
 
     method to_string {
-        sprintf '#<%s>' => Sub::Util::subname($self->body);
+        sprintf '#<%s>' => $name->to_string;
     }
 }
 

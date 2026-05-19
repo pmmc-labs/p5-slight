@@ -64,42 +64,37 @@ my sub _if ($E, $cond, $if_true, $if_false) {
 ## define root environment
 
 $i->init(
-    'lambda' => $a->Procedure( \&lambda, is_operative => true ),
-    'quote'  => $a->Procedure( \&quote,  is_operative => true ),
-    'defun'  => $a->Procedure( \&defun,  is_operative => true ),
-    'if'     => $a->Procedure( \&_if,    is_operative => true ),
-    # predicates
-    'atom?'  => $a->Procedure( \&atomp, is_applicative => true ),
-    'nil?'   => $a->Procedure( \&nilp,  is_applicative => true ),
-    'eq?'    => $a->Procedure( \&eqp,   is_applicative => true ),
-    # list constructors
-    'list'   => $a->Procedure( \&list,  is_applicative => true ),
-    'cons'   => $a->Procedure( \&cons,  is_applicative => true ),
-    # list accessors
-    'car'    => $a->Procedure( \&car,   is_applicative => true ),
-    'cdr'    => $a->Procedure( \&cdr,   is_applicative => true ),
-    # ... all of them
-    'caar'   => $a->Procedure( \&caar,  is_applicative => true ),
-    'cadr'   => $a->Procedure( \&cadr,  is_applicative => true ),
-    'cdar'   => $a->Procedure( \&cdar,  is_applicative => true ),
-    'cadar'  => $a->Procedure( \&cadar, is_applicative => true ),
-    'caddr'  => $a->Procedure( \&caddr, is_applicative => true ),
-    'cddar'  => $a->Procedure( \&cddar, is_applicative => true ),
-    # strings
-    '~' => $a->Procedure( \&concat, is_applicative => true ),
-    # maths
-    '+' => $a->Procedure( \&add, is_applicative => true ),
-    '-' => $a->Procedure( \&sub, is_applicative => true ),
-    '*' => $a->Procedure( \&mul, is_applicative => true ),
-    '/' => $a->Procedure( \&div, is_applicative => true ),
-    '%' => $a->Procedure( \&mod, is_applicative => true ),
-    # numeric equality and comparisons
-    '==' => $a->Procedure( \&num_eq, is_applicative => true ),
-    '!=' => $a->Procedure( \&num_ne, is_applicative => true ),
-    '>'  => $a->Procedure( \&num_gt, is_applicative => true ),
-    '<'  => $a->Procedure( \&num_lt, is_applicative => true ),
-    '>=' => $a->Procedure( \&num_ge, is_applicative => true ),
-    '<=' => $a->Procedure( \&num_le, is_applicative => true ),
+    'lambda' => $a->Procedure( $a->Sym('lambda' ), \&lambda, is_operative => true ),
+    'quote'  => $a->Procedure( $a->Sym('quote'  ), \&quote,  is_operative => true ),
+    'defun'  => $a->Procedure( $a->Sym('defun'  ), \&defun,  is_operative => true ),
+    'if'     => $a->Procedure( $a->Sym('if'     ), \&_if,    is_operative => true ),
+    'atom?'  => $a->Procedure( $a->Sym('atom?'  ), \&atomp, is_applicative => true ),
+    'nil?'   => $a->Procedure( $a->Sym('nil?'   ), \&nilp,  is_applicative => true ),
+    'eq?'    => $a->Procedure( $a->Sym('eq?'    ), \&eqp,   is_applicative => true ),
+    'list'   => $a->Procedure( $a->Sym('list'   ), \&list,  is_applicative => true ),
+    'cons'   => $a->Procedure( $a->Sym('cons'   ), \&cons,  is_applicative => true ),
+    'car'    => $a->Procedure( $a->Sym('car'    ), \&car,   is_applicative => true ),
+    'cdr'    => $a->Procedure( $a->Sym('cdr'    ), \&cdr,   is_applicative => true ),
+    'caar'   => $a->Procedure( $a->Sym('caar'   ), \&caar,  is_applicative => true ),
+    'cadr'   => $a->Procedure( $a->Sym('cadr'   ), \&cadr,  is_applicative => true ),
+    'cdar'   => $a->Procedure( $a->Sym('cdar'   ), \&cdar,  is_applicative => true ),
+    'cadar'  => $a->Procedure( $a->Sym('cadar'  ), \&cadar, is_applicative => true ),
+    'caddr'  => $a->Procedure( $a->Sym('caddr'  ), \&caddr, is_applicative => true ),
+    'cddar'  => $a->Procedure( $a->Sym('cddar'  ), \&cddar, is_applicative => true ),
+
+    '~' => $a->Procedure( $a->Sym('~'), \&concat, is_applicative => true ),
+    '+' => $a->Procedure( $a->Sym('+'), \&add, is_applicative => true ),
+    '-' => $a->Procedure( $a->Sym('-'), \&sub, is_applicative => true ),
+    '*' => $a->Procedure( $a->Sym('*'), \&mul, is_applicative => true ),
+    '/' => $a->Procedure( $a->Sym('/'), \&div, is_applicative => true ),
+    '%' => $a->Procedure( $a->Sym('%'), \&mod, is_applicative => true ),
+
+    '==' => $a->Procedure( $a->Sym('=='), \&num_eq, is_applicative => true ),
+    '!=' => $a->Procedure( $a->Sym('!='), \&num_ne, is_applicative => true ),
+    '>'  => $a->Procedure( $a->Sym('>' ), \&num_gt, is_applicative => true ),
+    '<'  => $a->Procedure( $a->Sym('<' ), \&num_lt, is_applicative => true ),
+    '>=' => $a->Procedure( $a->Sym('>='), \&num_ge, is_applicative => true ),
+    '<=' => $a->Procedure( $a->Sym('<='), \&num_le, is_applicative => true ),
 );
 
 ## add effects
