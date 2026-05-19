@@ -77,13 +77,18 @@ class Slight::Runtime {
         }
 
         $machine->init(
+            # special forms
             'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
             'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),
             'defun'  => $alloc->Procedure( $alloc->Sym('defun'  ), \&defun,  is_operative => true ),
             'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
+
+            # predicates
             'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
             'nil?'   => $alloc->Procedure( $alloc->Sym('nil?'   ), \&nilp,  is_applicative => true ),
             'eq?'    => $alloc->Procedure( $alloc->Sym('eq?'    ), \&eqp,   is_applicative => true ),
+
+            # lists
             'list'   => $alloc->Procedure( $alloc->Sym('list'   ), \&list,  is_applicative => true ),
             'cons'   => $alloc->Procedure( $alloc->Sym('cons'   ), \&cons,  is_applicative => true ),
             'car'    => $alloc->Procedure( $alloc->Sym('car'    ), \&car,   is_applicative => true ),
@@ -95,13 +100,17 @@ class Slight::Runtime {
             'caddr'  => $alloc->Procedure( $alloc->Sym('caddr'  ), \&caddr, is_applicative => true ),
             'cddar'  => $alloc->Procedure( $alloc->Sym('cddar'  ), \&cddar, is_applicative => true ),
 
+            # ops for strings
             '~' => $alloc->Procedure( $alloc->Sym('~'), \&concat, is_applicative => true ),
+
+            # maths for numbers
             '+' => $alloc->Procedure( $alloc->Sym('+'), \&add, is_applicative => true ),
             '-' => $alloc->Procedure( $alloc->Sym('-'), \&sub, is_applicative => true ),
             '*' => $alloc->Procedure( $alloc->Sym('*'), \&mul, is_applicative => true ),
             '/' => $alloc->Procedure( $alloc->Sym('/'), \&div, is_applicative => true ),
             '%' => $alloc->Procedure( $alloc->Sym('%'), \&mod, is_applicative => true ),
 
+            # eq/ordering for numbers
             '==' => $alloc->Procedure( $alloc->Sym('=='), \&num_eq, is_applicative => true ),
             '!=' => $alloc->Procedure( $alloc->Sym('!='), \&num_ne, is_applicative => true ),
             '>'  => $alloc->Procedure( $alloc->Sym('>' ), \&num_gt, is_applicative => true ),
