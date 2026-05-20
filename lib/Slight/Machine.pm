@@ -5,37 +5,18 @@ use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
 use Slight::Allocator;
-use Slight::Parser;
 
 ## ------------------------------------------
 ## Interpreter ...
 ## ------------------------------------------
 
 class Slight::Machine {
-    field $alloc  :param :reader = undef;
-    field $parser :param :reader = undef;
+    field $alloc :param :reader;
 
     field $tick = 0;
-
     field @queue;
-    field @environment;
 
-    ADJUST {
-        $alloc   //= Slight::Allocator->new;
-        $parser  //= Slight::Parser->new( alloc => $alloc );
-    }
-
-    method current_env { $environment[-1] }
-
-    method init (%bindings) {
-        push @environment => $alloc->Env(%bindings);
-        return $self;
-    }
-
-    method add_effect ($e) {
-        push @environment => $alloc->Env( $environment[-1], $e->provides->%* );
-        return $self;
-    }
+    field %watchers;
 
     ## ------------------------------------------
     ## Continuations
@@ -94,20 +75,17 @@ class Slight::Machine {
     ## Evaluation ...
     ## ------------------------------------------
 
-    method run ($source, %config) {
-        my @exprs = $parser->parse($source);
-        my $env   = $environment[-1];
-
+    method run ($exprs, $env) {
         push @queue =>
             Halt($env),
             reverse map {
                 Drop($env),
                 EvalExpr($env, $_)
-            } @exprs;
+            } @$exprs;
 
         my $result;
         while (@queue) {
-            my ($op, $env, @rest) = $self->execute(\@exprs, $env)->@*;
+            my ($op, $env, @rest) = $self->execute($env)->@*;
             given ($op) {
                 when (HOST) {
                     my ($effect, $action, @args) = @rest;
@@ -125,28 +103,47 @@ class Slight::Machine {
         return $result;
     }
 
-    method thread_computation ($env, @stack) {
+    my sub thread_computation ($q, $e, @s) {
         # append this stack to the previous opcode
-        push $queue[-1]->@* => @stack;
+        push $q->[-1]->@* => @s;
         # and pass on the environment, ....unless
         # it is a LEAVE_SCOPE opcode, in which case,
         # we will preserve it's environment and
         # not overwrite it
-        $queue[-1]->[1] = $env unless $queue[-1]->[0] eq LEAVE_SCOPE;
+        $q->[-1]->[1] = $e unless $q->[-1]->[0] eq LEAVE_SCOPE;
     }
 
-    method execute ($exprs, $env) {
+    my sub evaluate_term ($expr, $env, $a) {
+        given (blessed $expr) {
+            when ('Slight::Term::Cons') {
+                return EvalHead($env, $expr);
+            }
+            when ('Slight::Term::Sym') {
+                my $val = $env->lookup($expr);
+                return defined $val
+                    ? Just($env, $val)
+                    : Error($env, $a->Sym("Unable to find $expr in Env"))
+            }
+            default {
+                return Just($env, $expr)
+            }
+        }
+    }
+
+    method watch ($event, $f) { push @{ $watchers{$event} //= +[] } => $f }
+
+    method trigger ($event, @args) {
+        return unless exists $watchers{$event};
+        $_->((scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
+            foreach $watchers{$event}->@*;
+    }
+
+    method execute ($env) {
         while (@queue) {
             $tick++;
             my $next = pop @queue;
             my ($op, $env, @stack) = @$next;
-            Slight::DEBUG_STEP && Slight::Tools::Debug::debug_step(
-                (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
-                $tick,
-                $op,
-                $env,
-                @stack
-            );
+            $self->trigger(step => $op, $env, @stack);
             given ($op) {
                 when (HOST) {
                     return $next;
@@ -159,11 +156,11 @@ class Slight::Machine {
                 }
                 when (JUST) {
                     # append the stack ...
-                    $self->thread_computation($env, @stack);
+                    thread_computation(\@queue, $env, @stack);
                 }
                 when (DROP) {
                     # drop the stack ...
-                    $self->thread_computation($env);
+                    thread_computation(\@queue, $env);
                 }
                 when (ENTER_SCOPE) {
                     # TODO - add `defer` support
@@ -173,20 +170,14 @@ class Slight::Machine {
                     # ... pass the stack, and the
                     # restore the upper/older env
                     # TODO - handle `defer`s
-                    $self->thread_computation($env, @stack);
+                    thread_computation(\@queue, $env, @stack);
                 }
                 when (BIND) {
                     my ($sym, $term) = @stack;
                     my %local = ($sym->raw, $term);
                     my $local = $alloc->Env( $env, %local );
                     push @queue => Just( $local, $alloc->Nil );
-                    Slight::DEBUG_BIND && Slight::Tools::Debug::debug_bind(
-                        (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
-                        $tick,
-                        $env,
-                        $local,
-                        %local
-                    );
+                    $self->trigger(bind => $sym, $env, $local, %local);
                 }
                 when (COND) {
                     my $result = pop @stack;
@@ -201,25 +192,6 @@ class Slight::Machine {
                     push @queue => $self->step( $next );
                 }
             }
-
-            Slight::DEBUG_QUEUE && Slight::Tools::Debug::debug_queue($tick, @queue);
-        }
-    }
-
-    method eval ($expr, $env) {
-        given (blessed $expr) {
-            when ('Slight::Term::Cons') {
-                return EvalHead($env, $expr);
-            }
-            when ('Slight::Term::Sym') {
-                my $val = $env->lookup($expr);
-                return defined $val
-                    ? Just($env, $val)
-                    : Error($env, $alloc->Sym("Unable to find $expr in Env"))
-            }
-            default {
-                return Just($env, $expr)
-            }
         }
     }
 
@@ -228,12 +200,12 @@ class Slight::Machine {
         given ($op) {
             when (EVAL_EXPR) {
                 my ($expr) = @rest;
-                return $self->eval( $expr, $env );
+                return evaluate_term( $expr, $env, $alloc );
             }
             when (EVAL_HEAD) {
                 my ($head, $rest) = @rest;
                 return ApplyExpr( $env, $rest ),
-                       $self->eval( $head, $env );
+                       evaluate_term( $head, $env, $alloc );
             }
             when (EVAL_ARGS) {
                 my ($expr, @stack) = @rest;
@@ -242,7 +214,7 @@ class Slight::Machine {
                 }
                 else {
                     return EvalArgs( $env, $expr->tail, @stack ),
-                           $self->eval( $expr->head, $env );
+                           evaluate_term( $expr->head, $env, $alloc );
                 }
             }
             when (APPLY_EXPR) {
@@ -279,13 +251,9 @@ class Slight::Machine {
                             $params = $params->tail;
                         }
                         my $local = $alloc->Env( $call->env, %local );
-                        Slight::DEBUG_CALL && Slight::Tools::Debug::debug_call(
-                            (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue),
-                            $tick,
-                            $env,
-                            $local,
-                            %local
-                        );
+
+                        $self->trigger(call => $call, $env, $local, %local);
+
                         return LeaveScope( $env ),
                                EvalExpr( $local, $call->body ),
                                EnterScope( $env );

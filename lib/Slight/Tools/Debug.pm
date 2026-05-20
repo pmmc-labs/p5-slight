@@ -71,32 +71,34 @@ sub debug_step ($depth, $tick, $op, $env, @stack) {
     }
 }
 
-sub debug_bind ($depth, $tick, $env, $local, %local) {
+sub debug_bind ($depth, $tick, $name, $env, $local, %local) {
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
-    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ BIND *%s" => (join ';' => 120), $tick, $name->to_string;
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│  ╰─ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
                     (join ';' => 120),
                     $tick,
                     (join ';' => hex2rgb($env->hash)),
                     substr($env->hash, 0, 6),
                     (join ';' => hex2rgb($local->hash)),
                     substr($local->hash, 0, 6);
-    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│     +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
         foreach sort { $a cmp $b } keys %local;
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
 }
 
-sub debug_call ($depth, $tick, $env, $local, %local) {
+sub debug_call ($depth, $tick, $call, $env, $local, %local) {
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
-    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ APPLY &%s" => (join ';' => 120), $tick, ($call->name // '__ANON__');
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│  ╰─ENV (\e[38;2;%s;m%s\e[0m] -> \e[38;2;%s;m%s\e[0m)" =>
                     (join ';' => 120),
                     $tick,
                     (join ';' => hex2rgb($env->hash)),
                     substr($env->hash, 0, 6),
                     (join ';' => hex2rgb($local->hash)),
                     substr($local->hash, 0, 6);
-    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│    +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
+    say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│     +{%s : %s}" => (join ';' => 120), $tick, $_, $local{$_}
         foreach sort { $a cmp $b } keys %local;
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m╰%s╮" => (join ';' => 120), $tick, ('─' x 24);
 }

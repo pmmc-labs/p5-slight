@@ -18,13 +18,46 @@ class Slight::Runtime {
     field $parser  :param :reader = undef;
     field $machine :param :reader = undef;
 
+    field @environment;
+    field @effects;
+
     ADJUST {
         $alloc    //= Slight::Allocator->new;
         $parser   //= Slight::Parser->new( alloc => $alloc );
-        $machine  //= Slight::Machine->new( alloc => $alloc, parser => $parser );
+        $machine  //= Slight::Machine->new( alloc => $alloc );
     }
 
-    method init {
+    method run ($source, %opts) {
+        my @exprs = $parser->parse($source);
+        return $machine->run( \@exprs, $self->current_env )
+    }
+
+    method current_env {
+        $environment[-1] // die 'The root environment is not initialized';
+    }
+
+    method init (%config) {
+        $self->initialize_root_environment;
+        $self->initialize_core_effects;
+
+        if (Slight::DEBUG) {
+            Slight::DEBUG_STEP && $machine->watch(step => \&Slight::Tools::Debug::debug_step);
+            Slight::DEBUG_BIND && $machine->watch(bind => \&Slight::Tools::Debug::debug_bind);
+            Slight::DEBUG_CALL && $machine->watch(call => \&Slight::Tools::Debug::debug_call);
+        }
+
+        return $self;
+    }
+
+    method initialize_core_effects {
+        push @effects => Slight::Effect::TTY->new( alloc => $alloc );
+        foreach my $effect (@effects) {
+            push @environment => $alloc->Env( $environment[-1], $effect->provides->%* );
+        }
+        return $self;
+    }
+
+    method initialize_root_environment {
         my sub add ($n, $m) { $alloc->Num( $n->raw + $m->raw ) }
         my sub sub ($n, $m) { $alloc->Num( $n->raw - $m->raw ) }
         my sub mul ($n, $m) { $alloc->Num( $n->raw * $m->raw ) }
@@ -76,52 +109,50 @@ class Slight::Runtime {
                    Slight::Machine::EvalExpr( $E, $cond )
         }
 
-        $machine->init(
-            # special forms
-            'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
-            'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),
-            'defun'  => $alloc->Procedure( $alloc->Sym('defun'  ), \&defun,  is_operative => true ),
-            'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
+        @environment = (
+            $alloc->Env(
+                # special forms
+                'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
+                'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),
+                'defun'  => $alloc->Procedure( $alloc->Sym('defun'  ), \&defun,  is_operative => true ),
+                'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
 
-            # predicates
-            'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
-            'nil?'   => $alloc->Procedure( $alloc->Sym('nil?'   ), \&nilp,  is_applicative => true ),
-            'eq?'    => $alloc->Procedure( $alloc->Sym('eq?'    ), \&eqp,   is_applicative => true ),
+                # predicates
+                'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
+                'nil?'   => $alloc->Procedure( $alloc->Sym('nil?'   ), \&nilp,  is_applicative => true ),
+                'eq?'    => $alloc->Procedure( $alloc->Sym('eq?'    ), \&eqp,   is_applicative => true ),
 
-            # lists
-            'list'   => $alloc->Procedure( $alloc->Sym('list'   ), \&list,  is_applicative => true ),
-            'cons'   => $alloc->Procedure( $alloc->Sym('cons'   ), \&cons,  is_applicative => true ),
-            'car'    => $alloc->Procedure( $alloc->Sym('car'    ), \&car,   is_applicative => true ),
-            'cdr'    => $alloc->Procedure( $alloc->Sym('cdr'    ), \&cdr,   is_applicative => true ),
-            'caar'   => $alloc->Procedure( $alloc->Sym('caar'   ), \&caar,  is_applicative => true ),
-            'cadr'   => $alloc->Procedure( $alloc->Sym('cadr'   ), \&cadr,  is_applicative => true ),
-            'cdar'   => $alloc->Procedure( $alloc->Sym('cdar'   ), \&cdar,  is_applicative => true ),
-            'cadar'  => $alloc->Procedure( $alloc->Sym('cadar'  ), \&cadar, is_applicative => true ),
-            'caddr'  => $alloc->Procedure( $alloc->Sym('caddr'  ), \&caddr, is_applicative => true ),
-            'cddar'  => $alloc->Procedure( $alloc->Sym('cddar'  ), \&cddar, is_applicative => true ),
+                # lists
+                'list'   => $alloc->Procedure( $alloc->Sym('list'   ), \&list,  is_applicative => true ),
+                'cons'   => $alloc->Procedure( $alloc->Sym('cons'   ), \&cons,  is_applicative => true ),
+                'car'    => $alloc->Procedure( $alloc->Sym('car'    ), \&car,   is_applicative => true ),
+                'cdr'    => $alloc->Procedure( $alloc->Sym('cdr'    ), \&cdr,   is_applicative => true ),
+                'caar'   => $alloc->Procedure( $alloc->Sym('caar'   ), \&caar,  is_applicative => true ),
+                'cadr'   => $alloc->Procedure( $alloc->Sym('cadr'   ), \&cadr,  is_applicative => true ),
+                'cdar'   => $alloc->Procedure( $alloc->Sym('cdar'   ), \&cdar,  is_applicative => true ),
+                'cadar'  => $alloc->Procedure( $alloc->Sym('cadar'  ), \&cadar, is_applicative => true ),
+                'caddr'  => $alloc->Procedure( $alloc->Sym('caddr'  ), \&caddr, is_applicative => true ),
+                'cddar'  => $alloc->Procedure( $alloc->Sym('cddar'  ), \&cddar, is_applicative => true ),
 
-            # ops for strings
-            '~' => $alloc->Procedure( $alloc->Sym('~'), \&concat, is_applicative => true ),
+                # ops for strings
+                '~' => $alloc->Procedure( $alloc->Sym('~'), \&concat, is_applicative => true ),
 
-            # maths for numbers
-            '+' => $alloc->Procedure( $alloc->Sym('+'), \&add, is_applicative => true ),
-            '-' => $alloc->Procedure( $alloc->Sym('-'), \&sub, is_applicative => true ),
-            '*' => $alloc->Procedure( $alloc->Sym('*'), \&mul, is_applicative => true ),
-            '/' => $alloc->Procedure( $alloc->Sym('/'), \&div, is_applicative => true ),
-            '%' => $alloc->Procedure( $alloc->Sym('%'), \&mod, is_applicative => true ),
+                # maths for numbers
+                '+' => $alloc->Procedure( $alloc->Sym('+'), \&add, is_applicative => true ),
+                '-' => $alloc->Procedure( $alloc->Sym('-'), \&sub, is_applicative => true ),
+                '*' => $alloc->Procedure( $alloc->Sym('*'), \&mul, is_applicative => true ),
+                '/' => $alloc->Procedure( $alloc->Sym('/'), \&div, is_applicative => true ),
+                '%' => $alloc->Procedure( $alloc->Sym('%'), \&mod, is_applicative => true ),
 
-            # eq/ordering for numbers
-            '==' => $alloc->Procedure( $alloc->Sym('=='), \&num_eq, is_applicative => true ),
-            '!=' => $alloc->Procedure( $alloc->Sym('!='), \&num_ne, is_applicative => true ),
-            '>'  => $alloc->Procedure( $alloc->Sym('>' ), \&num_gt, is_applicative => true ),
-            '<'  => $alloc->Procedure( $alloc->Sym('<' ), \&num_lt, is_applicative => true ),
-            '>=' => $alloc->Procedure( $alloc->Sym('>='), \&num_ge, is_applicative => true ),
-            '<=' => $alloc->Procedure( $alloc->Sym('<='), \&num_le, is_applicative => true ),
+                # eq/ordering for numbers
+                '==' => $alloc->Procedure( $alloc->Sym('=='), \&num_eq, is_applicative => true ),
+                '!=' => $alloc->Procedure( $alloc->Sym('!='), \&num_ne, is_applicative => true ),
+                '>'  => $alloc->Procedure( $alloc->Sym('>' ), \&num_gt, is_applicative => true ),
+                '<'  => $alloc->Procedure( $alloc->Sym('<' ), \&num_lt, is_applicative => true ),
+                '>=' => $alloc->Procedure( $alloc->Sym('>='), \&num_ge, is_applicative => true ),
+                '<=' => $alloc->Procedure( $alloc->Sym('<='), \&num_le, is_applicative => true ),
+            )
         );
-
-        $machine->add_effect( Slight::Effect::TTY->new( alloc => $alloc ) );
-
-        return $machine;
     }
 
 }
