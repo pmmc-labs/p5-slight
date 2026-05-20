@@ -23,16 +23,15 @@ class Slight::Runtime::Context {
 class Slight::Runtime {
     field $alloc   :param :reader = undef;
     field $parser  :param :reader = undef;
-    field $machine :param :reader = undef;
 
     field @environment;
     field @effects;
+
     field @queue;
 
     ADJUST {
-        $alloc    //= Slight::Allocator->new;
-        $parser   //= Slight::Parser->new( alloc => $alloc );
-        $machine  //= Slight::Machine->new( alloc => $alloc );
+        $alloc  //= Slight::Allocator->new;
+        $parser //= Slight::Parser->new( alloc => $alloc );
     }
 
     ## -------------------------------------------------------------------------
@@ -107,7 +106,7 @@ class Slight::Runtime {
                             }
                             default {
                                 $ctx->machine->kontinue(
-                                    $effect->handler($machine, $action, $env, @args)
+                                    $effect->handler($ctx->machine, $action, $env, @args)
                                 );
                             }
                         }
