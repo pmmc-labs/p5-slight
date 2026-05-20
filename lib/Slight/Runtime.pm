@@ -13,6 +13,13 @@ use Slight::Term;
 ## Runtime
 ## -----------------------------------------------------------------------------
 
+class Slight::Runtime::Context {
+    field $root_env :param :reader;
+    field $machine  :param :reader;
+    field $on_exit  :param :reader;
+    field $on_error :param :reader;
+}
+
 class Slight::Runtime {
     field $alloc   :param :reader = undef;
     field $parser  :param :reader = undef;
@@ -20,6 +27,7 @@ class Slight::Runtime {
 
     field @environment;
     field @effects;
+    field @queue;
 
     ADJUST {
         $alloc    //= Slight::Allocator->new;
@@ -27,10 +35,138 @@ class Slight::Runtime {
         $machine  //= Slight::Machine->new( alloc => $alloc );
     }
 
-    method run ($source, %opts) {
-        my @exprs = $parser->parse($source);
-        return $machine->run( \@exprs, $self->current_env )
+    ## -------------------------------------------------------------------------
+
+    method new_context {
+        my $env = $self->current_env;
+        my $ctx = Slight::Runtime::Context->new(
+            root_env => $env,
+            machine  => Slight::Machine->new( alloc => $alloc ),
+            on_exit  => Slight::Machine::Host( $env, Slight::Effect::HALT->new,  $alloc->Sym('!HALT') ),
+            on_error => Slight::Machine::Host( $env, Slight::Effect::ERROR->new, $alloc->Sym('!ERROR') ),
+        );
+
+        if (Slight::DEBUG) {
+            Slight::DEBUG_STEP && $ctx->machine->watch(step => \&Slight::Tools::Debug::debug_step);
+            Slight::DEBUG_BIND && $ctx->machine->watch(bind => \&Slight::Tools::Debug::debug_bind);
+            Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
+        }
+
+        return $ctx;
     }
+
+    ## -------------------------------------------------------------------------
+
+    sub Parse   ($ctx, $src)   { [ PARSE   => $ctx, $src   ] }
+    sub Compile ($ctx, @exprs) { [ COMPILE => $ctx, @exprs ] }
+    sub Run     ($ctx, @konts) { [ RUN     => $ctx, @konts ] }
+    sub Return  ($ctx, @stack) { [ RETURN  => $ctx, @stack ] }
+
+    ## -------------------------------------------------------------------------
+
+    method prepare ($ctx, $src) {
+        push @queue => Parse( $ctx, $alloc->Str( $src ) );
+        return $self;
+    }
+
+    method execute {
+        while (@queue) {
+            my $next = pop @queue;
+            my ($op, $ctx, @rest) = @$next;
+            given ($op) {
+                when ('PARSE') {
+                    my ($src) = @rest;
+                    my @exprs = $parser->parse( $src->raw );
+                    push @queue => Compile( $ctx, @exprs );
+                }
+                when ('COMPILE') {
+                    my @exprs = @rest;
+                    my @konts = $ctx->machine->compile_expr( \@exprs, $ctx->root_env );
+                    push @queue => Run( $ctx, $ctx->on_exit, @konts );
+                }
+                when ('RUN') {
+                    my @konts = @rest;
+                    my $result = $self->kontinue( $ctx, @konts );
+                    # XXX - this is wrong, but for now ... okish
+                    return $result;
+                }
+            }
+        }
+    }
+
+    method kontinue ($ctx, @konts) {
+        $ctx->machine->kontinue( @konts );
+
+        until ($ctx->machine->is_done) {
+            my $host = $ctx->machine->run_until_host( $ctx->on_error );
+            my (undef, $env, $effect, $action, @args) = @$host;
+            given (blessed $effect) {
+                when ('Slight::Effect::HALT') {
+                    my ($result) = @args;
+                    return $result;
+                }
+                when ('Slight::Effect::ERROR') {
+                    my ($error) = @args;
+                    die $error;
+                }
+                default {
+                    $ctx->machine->kontinue(
+                        $effect->handler($machine, $action, $env, @args)
+                    );
+                }
+            }
+        }
+    }
+
+    ## -------------------------------------------------------------------------
+    ## old
+
+    method compile ($source, %opts) {
+        my @exprs = $parser->parse($source);
+        my $env   = $self->current_env;
+
+        $machine->compile(
+            \@exprs,
+            $env,
+            Slight::Machine::Host(
+                $env,
+                Slight::Effect::HALT->new,
+                $alloc->Sym('!HALT')
+            )
+        );
+
+        return $self;
+    }
+
+    method run {
+        my $on_error = Slight::Machine::Host(
+            $self->current_env, Slight::Effect::ERROR->new, $alloc->Sym('!ERROR')
+        );
+
+        until ($machine->is_done) {
+            my $host = $machine->run_until_host( $on_error );
+            my ($op, $env, $effect, $action, @args) = @$host;
+            given (blessed $effect) {
+                when ('Slight::Effect::HALT') {
+                    my ($result) = @args;
+                    return $result;
+                }
+                when ('Slight::Effect::ERROR') {
+                    my ($error) = @args;
+                    die $error;
+                }
+                default {
+                    $machine->kontinue(
+                        $effect->handler($machine, $action, $env, @args)
+                    );
+                }
+            }
+        }
+
+        return $alloc->Nil;
+    }
+
+    ## -------------------------------------------------------------------------
 
     method current_env {
         $environment[-1] // die 'The root environment is not initialized';

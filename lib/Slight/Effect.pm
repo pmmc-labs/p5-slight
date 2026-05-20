@@ -17,6 +17,9 @@ class Slight::Effect {
     method to_string { sprintf '*{%s}' => __CLASS__ }
 }
 
+class Slight::Effect::HALT  :isa(Slight::Effect) {}
+class Slight::Effect::ERROR :isa(Slight::Effect) {}
+
 class Slight::Effect::TTY :isa(Slight::Effect) {
     field $alloc  :param :reader;
     field $input  :param :reader = \*STDIN;

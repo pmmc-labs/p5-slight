@@ -11,7 +11,6 @@ sub hex2rgb ($hex) {
 
 sub opcode2rgb ($op) {
     return hex2rgb("FCC200") if $op eq Slight::Machine::ERROR;
-    return hex2rgb("DF73FF") if $op eq Slight::Machine::HALT;
     return hex2rgb("5A4FCF") if $op eq Slight::Machine::HOST;
     return hex2rgb("00A86B") if $op eq Slight::Machine::JUST;
     return hex2rgb("4CBB17") if $op eq Slight::Machine::DROP;
@@ -66,7 +65,7 @@ sub debug_step ($depth, $tick, $op, $env, @stack) {
         (join ';' => hex2rgb($env->hash)),
         substr($env->hash, 0, 6),
         join ', ' => map $_->to_string, @stack;
-    if ($op eq Slight::Machine::HALT) {
+    if ($op eq Slight::Machine::HOST) {
         say sprintf "      ╰─────────────┴────────╯";
     }
 }

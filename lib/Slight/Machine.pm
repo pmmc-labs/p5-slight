@@ -22,9 +22,8 @@ class Slight::Machine {
     ## Continuations
     ## ------------------------------------------
 
-    use constant ERROR      => 'ERROR';
-    use constant HALT       => 'HALT';
     use constant HOST       => 'HOST';
+    use constant ERROR      => 'ERROR';
 
     use constant JUST       => 'JUST';
     use constant DROP       => 'DROP';
@@ -44,8 +43,7 @@ class Slight::Machine {
 
     ## Continuation constructors
 
-    sub Error ($env, $error)  { [ ERROR, $env, $error ] }
-    sub Halt  ($env)          { [ HALT,  $env ] }
+    sub Error ($env, $error)  { [ ERROR, $error ] }
 
     sub Host  ($env, $effect, $action) {
         [ HOST, $env, $effect, $action ]
@@ -72,35 +70,26 @@ class Slight::Machine {
     sub LeaveScope ($env) { [ LEAVE_SCOPE, $env ] }
 
     ## ------------------------------------------
-    ## Evaluation ...
+    ## Monitoring
     ## ------------------------------------------
 
-    method run ($exprs, $env) {
-        push @queue =>
-            Halt($env),
-            reverse map {
-                Drop($env),
-                EvalExpr($env, $_)
-            } @$exprs;
+    method watch ($event, $f) { push @{ $watchers{$event} //= +[] } => $f }
 
-        my $result;
-        while (@queue) {
-            my ($op, $env, @rest) = $self->execute($env)->@*;
-            given ($op) {
-                when (HOST) {
-                    my ($effect, $action, @args) = @rest;
-                    push @queue => $effect->handler($self, $action, $env, @args);
-                }
-                when (HALT) {
-                    ($result) = @rest;
-                }
-                when (ERROR) {
-                    die 'ERROR: '.(join ' ' => map $_->to_string, @rest);
-                }
-            }
-        }
+    method trigger ($event, @args) {
+        return unless exists $watchers{$event};
+        $_->((scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
+            foreach $watchers{$event}->@*;
+    }
 
-        return $result;
+    ## ------------------------------------------
+    ## private helpers
+    ## ------------------------------------------
+
+    my sub compile_expressions ($exprs, $env) {
+        reverse map {
+            Drop($env),
+            EvalExpr($env, $_)
+        } @$exprs
     }
 
     my sub thread_computation ($q, $e, @s) {
@@ -130,15 +119,24 @@ class Slight::Machine {
         }
     }
 
-    method watch ($event, $f) { push @{ $watchers{$event} //= +[] } => $f }
+    ## ------------------------------------------
+    ## Evaluation ...
+    ## ------------------------------------------
 
-    method trigger ($event, @args) {
-        return unless exists $watchers{$event};
-        $_->((scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
-            foreach $watchers{$event}->@*;
+    method is_done { scalar @queue == 0 }
+
+    method kontinue (@konts) { push @queue => @konts }
+
+    method compile_expr ($exprs, $env) {
+        return compile_expressions($exprs, $env);
     }
 
-    method execute ($env) {
+    method compile ($exprs, $env, $on_exit) {
+        push @queue => $on_exit, compile_expressions($exprs, $env);
+        return $self;
+    }
+
+    method run_until_host ($on_error) {
         while (@queue) {
             $tick++;
             my $next = pop @queue;
@@ -148,11 +146,8 @@ class Slight::Machine {
                 when (HOST) {
                     return $next;
                 }
-                when (HALT) {
-                    return $next;
-                }
                 when (ERROR) {
-                    return $next;
+                    return Host( @$on_error, $next );
                 }
                 when (JUST) {
                     # append the stack ...
