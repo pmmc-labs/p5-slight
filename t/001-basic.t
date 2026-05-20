@@ -6,7 +6,9 @@ use experimental qw[ class switch ];
 
 use Slight;
 
-say Slight::Runtime->new->init->compile(q[
+my $r = Slight::Runtime->new->init;
+
+$r->compile($r->new_context, q[
 
 (defun fact (n)
     (if (== n 0) 1
@@ -19,5 +21,7 @@ say Slight::Runtime->new->init->compile(q[
 
 (say (~ "fact(6) + fib(6) = " (+ (fact 6) (fib 6))))
 
-])->run;
+]);
+
+say $r->run;
 

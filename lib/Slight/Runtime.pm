@@ -57,23 +57,27 @@ class Slight::Runtime {
 
     ## -------------------------------------------------------------------------
 
+    sub Eval    ($ctx, $str)   { [ EVAL    => $ctx, $str   ] }
     sub Parse   ($ctx, $src)   { [ PARSE   => $ctx, $src   ] }
     sub Compile ($ctx, @exprs) { [ COMPILE => $ctx, @exprs ] }
     sub Run     ($ctx, @konts) { [ RUN     => $ctx, @konts ] }
-    sub Return  ($ctx, @stack) { [ RETURN  => $ctx, @stack ] }
 
     ## -------------------------------------------------------------------------
 
-    method prepare ($ctx, $src) {
-        push @queue => Parse( $ctx, $alloc->Str( $src ) );
+    method compile ($ctx, $src) {
+        push @queue => Eval( $ctx, $alloc->Str( $src ) );
         return $self;
     }
 
-    method execute {
+    method run {
         while (@queue) {
             my $next = pop @queue;
             my ($op, $ctx, @rest) = @$next;
             given ($op) {
+                when ('EVAL') {
+                    my ($str) = @rest;
+                    push @queue => Parse( $ctx, $str );
+                }
                 when ('PARSE') {
                     my ($src) = @rest;
                     my @exprs = $parser->parse( $src->raw );
@@ -82,88 +86,35 @@ class Slight::Runtime {
                 when ('COMPILE') {
                     my @exprs = @rest;
                     my @konts = $ctx->machine->compile_expr( \@exprs, $ctx->root_env );
-                    push @queue => Run( $ctx, $ctx->on_exit, @konts );
+                    unshift @konts => $ctx->on_exit;
+                    push @queue => Run( $ctx, @konts );
                 }
                 when ('RUN') {
                     my @konts = @rest;
-                    my $result = $self->kontinue( $ctx, @konts );
-                    # XXX - this is wrong, but for now ... okish
-                    return $result;
+                    my $result;
+                    $ctx->machine->kontinue( @konts );
+                    until ($ctx->machine->is_done) {
+                        my $host = $ctx->machine->run_until_host( $ctx->on_error );
+                        my (undef, $env, $effect, $action, @args) = @$host;
+                        given (blessed $effect) {
+                            when ('Slight::Effect::HALT') {
+                                my ($result) = @args;
+                                return $result;
+                            }
+                            when ('Slight::Effect::ERROR') {
+                                my ($error) = @args;
+                                die $error;
+                            }
+                            default {
+                                $ctx->machine->kontinue(
+                                    $effect->handler($machine, $action, $env, @args)
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
-    }
-
-    method kontinue ($ctx, @konts) {
-        $ctx->machine->kontinue( @konts );
-
-        until ($ctx->machine->is_done) {
-            my $host = $ctx->machine->run_until_host( $ctx->on_error );
-            my (undef, $env, $effect, $action, @args) = @$host;
-            given (blessed $effect) {
-                when ('Slight::Effect::HALT') {
-                    my ($result) = @args;
-                    return $result;
-                }
-                when ('Slight::Effect::ERROR') {
-                    my ($error) = @args;
-                    die $error;
-                }
-                default {
-                    $ctx->machine->kontinue(
-                        $effect->handler($machine, $action, $env, @args)
-                    );
-                }
-            }
-        }
-    }
-
-    ## -------------------------------------------------------------------------
-    ## old
-
-    method compile ($source, %opts) {
-        my @exprs = $parser->parse($source);
-        my $env   = $self->current_env;
-
-        $machine->compile(
-            \@exprs,
-            $env,
-            Slight::Machine::Host(
-                $env,
-                Slight::Effect::HALT->new,
-                $alloc->Sym('!HALT')
-            )
-        );
-
-        return $self;
-    }
-
-    method run {
-        my $on_error = Slight::Machine::Host(
-            $self->current_env, Slight::Effect::ERROR->new, $alloc->Sym('!ERROR')
-        );
-
-        until ($machine->is_done) {
-            my $host = $machine->run_until_host( $on_error );
-            my ($op, $env, $effect, $action, @args) = @$host;
-            given (blessed $effect) {
-                when ('Slight::Effect::HALT') {
-                    my ($result) = @args;
-                    return $result;
-                }
-                when ('Slight::Effect::ERROR') {
-                    my ($error) = @args;
-                    die $error;
-                }
-                default {
-                    $machine->kontinue(
-                        $effect->handler($machine, $action, $env, @args)
-                    );
-                }
-            }
-        }
-
-        return $alloc->Nil;
     }
 
     ## -------------------------------------------------------------------------
@@ -175,13 +126,6 @@ class Slight::Runtime {
     method init (%config) {
         $self->initialize_root_environment;
         $self->initialize_core_effects;
-
-        if (Slight::DEBUG) {
-            Slight::DEBUG_STEP && $machine->watch(step => \&Slight::Tools::Debug::debug_step);
-            Slight::DEBUG_BIND && $machine->watch(bind => \&Slight::Tools::Debug::debug_bind);
-            Slight::DEBUG_CALL && $machine->watch(call => \&Slight::Tools::Debug::debug_call);
-        }
-
         return $self;
     }
 
