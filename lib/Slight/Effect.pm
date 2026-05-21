@@ -20,14 +20,24 @@ class Slight::Effect {
 class Slight::Effect::SIGNAL :isa(Slight::Effect) {
     field $alloc  :param :reader;
 
+    field $HALT  :reader;
+    field $ERROR :reader;
+
+    ADJUST {
+        $HALT  = $alloc->Tag('!HALT');
+        $ERROR = $alloc->Tag('!ERROR');
+    }
+
     method handler  ($ctx, $action, $env, @args) {
         given ($action->raw) {
             when ('!HALT') {
                 $ctx->result = $args[0];
+                $ctx->last_env = $env;
                 return ();
             }
             when ('!ERROR') {
                 $ctx->error = $args[0];
+                $ctx->last_env = $env;
                 return ();
             }
         }
@@ -35,8 +45,8 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
 
     method provides {
         return +{
-            '!HALT'  => $alloc->Tag('!HALT'),
-            '!ERROR' => $alloc->Tag('!ERROR'),
+            '!HALT'  => $HALT,
+            '!ERROR' => $ERROR,
         }
     }
 }

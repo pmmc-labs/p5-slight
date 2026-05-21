@@ -45,8 +45,12 @@ sub debug_queue ($tick, @queue) {
 }
 
 sub debug_step ($depth, $tick, $op, $env, @stack) {
-    if ($tick == 1) {
-        say sprintf "      ╭─────────────┬────────╮";
+    state $cap_it = false;
+
+    if ($tick == 1 || $cap_it) {
+        say sprintf "%s      ╭─────────────┬────────╮",
+            ($depth ? ('  ' x $depth) : '');
+        $cap_it = false;
     }
     if ($op eq Slight::Machine::LEAVE_SCOPE) {
         say sprintf "%s      ╭─┴─────────────┴────────╯",
@@ -66,7 +70,9 @@ sub debug_step ($depth, $tick, $op, $env, @stack) {
         substr($env->hash, 0, 6),
         join ', ' => map $_->to_string, @stack;
     if ($op eq Slight::Machine::HOST) {
-        say sprintf "      ╰─────────────┴────────╯";
+        say sprintf "%s      ╰─────────────┴────────╯",
+            ($depth ? ('  ' x $depth) : '');
+        $cap_it = true;
     }
 }
 

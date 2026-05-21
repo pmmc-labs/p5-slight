@@ -13,53 +13,70 @@ use Slight::Term;
 ## Runtime
 ## -----------------------------------------------------------------------------
 
-class Slight::Runtime::Program {
-    field $source :param :reader;
-    field $exprs  :param :reader;
-}
-
 class Slight::Runtime::Context {
     field $PID      :param :reader;
+    field $SIGNAL   :param :reader;
     field $runtime  :param :reader;
     field $root_env :param :reader;
     field $machine  :param :reader;
     field $program  :param :reader;
 
+    field $on_exit  :param :reader = undef;
+    field $on_error :param :reader = undef;
+
+    ADJUST {
+        $on_exit  //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->HALT  );
+        $on_error //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->ERROR );
+    }
+
     field $result;
     field $error;
+    field $last_env;
 
     method result :lvalue { $result }
     method error  :lvalue { $error  }
 
+    method last_env :lvalue { $last_env }
+
     method is_done { defined $result || defined $error }
+
+    method is_running { $machine->in_running }
+
+    method compile {
+        $machine->compile( $program, $root_env, $on_exit );
+    }
+
+    method run_until_host {
+        $machine->run_until_host( $on_error );
+    }
+
+    method kontinue (@next) { $machine->kontinue( @next ) }
 }
 
 class Slight::Runtime {
-    field $alloc   :param :reader = undef;
-    field $parser  :param :reader = undef;
+    field $alloc :param :reader = undef;
 
     field @environment;
     field @effects;
-    field @contexts;
 
     ADJUST {
         $alloc  //= Slight::Allocator->new;
-        $parser //= Slight::Parser->new( alloc => $alloc );
     }
 
     ## -------------------------------------------------------------------------
 
-    method spawn_context ($src) {
-        my $env = $self->current_env;
+    method spawn_context ($src, $env=undef) {
+        state $PID_SEQ = 0;
+
+        $env //= $self->current_env;
+
         my $ctx = Slight::Runtime::Context->new(
-            PID      => (scalar @contexts),
+            PID      => ++$PID_SEQ,
+            SIGNAL   => Slight::Effect::SIGNAL->new( alloc => $alloc ),
             runtime  => $self,
             root_env => $env,
             machine  => Slight::Machine->new( alloc => $alloc ),
-            program  => Slight::Runtime::Program->new(
-                source => $src,
-                exprs  => +[ $parser->parse( $src ) ]
-            )
+            program  => +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ]
         );
 
         if (Slight::DEBUG) {
@@ -68,35 +85,52 @@ class Slight::Runtime {
             Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
         }
 
-        push @contexts => $ctx;
         return $ctx;
     }
 
     ## -------------------------------------------------------------------------
 
     method run ($ctx) {
-        my $SIG = Slight::Effect::SIGNAL->new( alloc => $alloc );
-
-        $ctx->machine->compile(
-            $ctx->program->exprs,
-            $ctx->root_env,
-            Slight::Machine::Host( $ctx->root_env, $SIG, $alloc->Tag('!HALT') )
-        );
-
-        my $on_error = Slight::Machine::Host(
-            $ctx->root_env,
-            $SIG,
-            $alloc->Tag('!ERROR')
-        );
+        $ctx->compile;
 
         until ($ctx->is_done) {
-            my $host = $ctx->machine->run_until_host( $on_error );
-            my (undef, $env, $effect, $action, @args) = @$host;
+            my ($HOST, $env, $effect, $action, @args) = $ctx->run_until_host->@*;
             my @next = $effect->handler( $ctx, $action, $env, @args );
-            $ctx->machine->kontinue( @next ) if @next;
+            $ctx->kontinue( @next ) if @next;
         }
 
         return $ctx;
+    }
+
+    method run_all (@all) {
+
+        my @done;
+        my @contexts = @all;
+
+        $_->compile foreach @contexts;
+
+        while (@contexts) {
+            my $ctx = shift @contexts;
+            if ($ctx->is_done) {
+                push @done => $ctx;
+            } else {
+                #say '-' x 100;
+                #say join ', ' => map $_->PID, ($ctx, @contexts);
+                #say '-' x 100;
+                #say "RUNNING: ", join ' : ' => $ctx->PID, $ctx;
+                my $host = $ctx->run_until_host;
+                #say "GOT: ", join ', ' => @$host;
+                my ($HOST, $env, $effect, $action, @args) = @$host;
+                #say "Running Effect: $effect";
+                my @next = $effect->handler( $ctx, $action, $env, @args );
+                #say "NEXT: ", join "\n" => map { join ', ' => @$_ } @next;
+                $ctx->kontinue( @next ) if @next;
+                #my $x = <>;
+                push @contexts => $ctx;
+            }
+        }
+
+        return @done;
     }
 
     ## -------------------------------------------------------------------------
@@ -171,6 +205,15 @@ class Slight::Runtime {
                    Slight::Machine::EvalExpr( $E, $cond )
         }
 
+        my sub _do ($E, @exprs) {
+            my @progn = reverse map {
+                Slight::Machine::Drop($E),
+                Slight::Machine::EvalExpr($E, $_)
+            } @exprs;
+            pop @progn;
+            return @progn;
+        }
+
         @environment = (
             $alloc->Env(
                 # special forms
@@ -178,6 +221,7 @@ class Slight::Runtime {
                 'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),
                 'defun'  => $alloc->Procedure( $alloc->Sym('defun'  ), \&defun,  is_operative => true ),
                 'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
+                'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
 
                 # predicates
                 'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
