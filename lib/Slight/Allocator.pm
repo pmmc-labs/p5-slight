@@ -32,14 +32,19 @@ class Slight::Allocator {
         $terms{ $hash } //= Slight::Term::Num->new( raw => $n, hash => $hash )
     }
 
+    method Str ($s) {
+        my $hash = Slight::Term::Str->hash_of($s);
+        $terms{ $hash } //= Slight::Term::Str->new( raw => $s, hash => $hash )
+    }
+
     method Sym ($s) {
         my $hash = Slight::Term::Sym->hash_of($s);
         $terms{ $hash } //= Slight::Term::Sym->new( raw => $s, hash => $hash )
     }
 
-    method Str ($s) {
-        my $hash = Slight::Term::Str->hash_of($s);
-        $terms{ $hash } //= Slight::Term::Str->new( raw => $s, hash => $hash )
+    method Tag ($s) {
+        my $hash = Slight::Term::Tag->hash_of($s);
+        $terms{ $hash } //= Slight::Term::Tag->new( raw => $s, hash => $hash )
     }
 
     method Pair ($f, $s) {

@@ -13,11 +13,29 @@ use Slight::Term;
 ## Runtime
 ## -----------------------------------------------------------------------------
 
+class Slight::Signal {
+    method to_string { sprintf '^{%s}' => __CLASS__ }
+}
+class Slight::Signal::HALT  :isa(Slight::Signal) {}
+class Slight::Signal::ERROR :isa(Slight::Signal) {}
+
+class Slight::Runtime::Program {
+    field $source :param :reader;
+    field $exprs  :param :reader;
+}
+
 class Slight::Runtime::Context {
+    field $PID      :param :reader;
+    field $runtime  :param :reader;
     field $root_env :param :reader;
     field $machine  :param :reader;
-    field $on_exit  :param :reader;
-    field $on_error :param :reader;
+    field $program  :param :reader;
+
+    field $result;
+    field $error;
+
+    method result :lvalue { $result }
+    method error  :lvalue { $error  }
 }
 
 class Slight::Runtime {
@@ -26,8 +44,7 @@ class Slight::Runtime {
 
     field @environment;
     field @effects;
-
-    field @queue;
+    field @contexts;
 
     ADJUST {
         $alloc  //= Slight::Allocator->new;
@@ -36,13 +53,17 @@ class Slight::Runtime {
 
     ## -------------------------------------------------------------------------
 
-    method new_context {
+    method spawn_context ($src) {
         my $env = $self->current_env;
         my $ctx = Slight::Runtime::Context->new(
+            PID      => (scalar @contexts),
+            runtime  => $self,
             root_env => $env,
             machine  => Slight::Machine->new( alloc => $alloc ),
-            on_exit  => Slight::Machine::Host( $env, Slight::Effect::HALT->new,  $alloc->Sym('!HALT') ),
-            on_error => Slight::Machine::Host( $env, Slight::Effect::ERROR->new, $alloc->Sym('!ERROR') ),
+            program  => Slight::Runtime::Program->new(
+                source => $src,
+                exprs  => +[ $parser->parse( $src ) ]
+            )
         );
 
         if (Slight::DEBUG) {
@@ -51,67 +72,40 @@ class Slight::Runtime {
             Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
         }
 
+        push @contexts => $ctx;
         return $ctx;
     }
 
     ## -------------------------------------------------------------------------
 
-    sub Eval    ($ctx, $str)   { [ EVAL    => $ctx, $str   ] }
-    sub Parse   ($ctx, $src)   { [ PARSE   => $ctx, $src   ] }
-    sub Compile ($ctx, @exprs) { [ COMPILE => $ctx, @exprs ] }
-    sub Run     ($ctx, @konts) { [ RUN     => $ctx, @konts ] }
+    method run ($ctx) {
+        $ctx->machine->compile(
+            $ctx->program->exprs,
+            $ctx->root_env,
+            Slight::Machine::Host( $ctx->root_env, Slight::Signal::HALT->new )
+        );
 
-    ## -------------------------------------------------------------------------
+        my $on_error = Slight::Machine::Host( $ctx->root_env, Slight::Signal::ERROR->new );
 
-    method compile ($ctx, $src) {
-        push @queue => Eval( $ctx, $alloc->Str( $src ) );
-        return $self;
-    }
-
-    method run {
-        while (@queue) {
-            my $next = pop @queue;
-            my ($op, $ctx, @rest) = @$next;
-            given ($op) {
-                when ('EVAL') {
-                    my ($str) = @rest;
-                    push @queue => Parse( $ctx, $str );
-                }
-                when ('PARSE') {
-                    my ($src) = @rest;
-                    my @exprs = $parser->parse( $src->raw );
-                    push @queue => Compile( $ctx, @exprs );
-                }
-                when ('COMPILE') {
-                    my @exprs = @rest;
-                    my @konts = $ctx->machine->compile_expr( \@exprs, $ctx->root_env );
-                    unshift @konts => $ctx->on_exit;
-                    push @queue => Run( $ctx, @konts );
-                }
-                when ('RUN') {
-                    my @konts = @rest;
-                    my $result;
-                    $ctx->machine->kontinue( @konts );
-                    until ($ctx->machine->is_done) {
-                        my $host = $ctx->machine->run_until_host( $ctx->on_error );
-                        my (undef, $env, $effect, $action, @args) = @$host;
-                        given (blessed $effect) {
-                            when ('Slight::Effect::HALT') {
-                                my ($result) = @args;
-                                return $result;
-                            }
-                            when ('Slight::Effect::ERROR') {
-                                my ($error) = @args;
-                                die $error;
-                            }
-                            default {
-                                $ctx->machine->kontinue(
-                                    $effect->handler($ctx->machine, $action, $env, @args)
-                                );
-                            }
-                        }
+        while ($ctx->machine->is_running) {
+            my $host = $ctx->machine->run_until_host( $on_error );
+            if ($host->[2] isa Slight::Signal) {
+                my (undef, $env, $sig, @args) = @$host;
+                given (blessed $sig) {
+                    when ('Slight::Signal::HALT') {
+                        return $args[0];
+                    }
+                    when ('Slight::Signal::ERROR') {
+                        die $args[0];
+                    }
+                    default {
+                        die "Unknown Signal ${sig}";
                     }
                 }
+            }
+            else {
+                my (undef, $env, $effect, $action, @args) = @$host;
+                $ctx->machine->kontinue( $effect->handler( $ctx, $action, $env, @args ) );
             }
         }
     }

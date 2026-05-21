@@ -12,13 +12,10 @@ use Slight::Machine;
 
 class Slight::Effect {
     use overload '""' => 'to_string';
-    method handler  ($i, $a, $e, @a) { ... }
+    method handler  ($ctx, $a, $e, @a) { ... }
     method provides { +{} }
     method to_string { sprintf '*{%s}' => __CLASS__ }
 }
-
-class Slight::Effect::HALT  :isa(Slight::Effect) {}
-class Slight::Effect::ERROR :isa(Slight::Effect) {}
 
 class Slight::Effect::TTY :isa(Slight::Effect) {
     field $alloc  :param :reader;
@@ -26,7 +23,7 @@ class Slight::Effect::TTY :isa(Slight::Effect) {
     field $output :param :reader = \*STDOUT;
     field $error  :param :reader = \*STDERR;
 
-    method handler  ($inter, $action, $env, @args) {
+    method handler  ($ctx, $action, $env, @args) {
         given ($action->raw) {
             when ('print') {
                 $output->print( map $_->raw, @args );

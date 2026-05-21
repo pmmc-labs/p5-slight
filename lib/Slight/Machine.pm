@@ -45,9 +45,7 @@ class Slight::Machine {
 
     sub Error ($env, $error)  { [ ERROR, $error ] }
 
-    sub Host  ($env, $effect, $action) {
-        [ HOST, $env, $effect, $action ]
-    }
+    sub Host  ($env, @args) { [ HOST, $env, @args ] }
 
     sub Drop ($env)         { [ DROP, $env ] }
     sub Just ($env, @stack) { [ JUST, $env, @stack ] }
@@ -123,13 +121,9 @@ class Slight::Machine {
     ## Evaluation ...
     ## ------------------------------------------
 
-    method is_done { scalar @queue == 0 }
+    method is_running { scalar @queue > 0 }
 
     method kontinue (@konts) { push @queue => @konts }
-
-    method compile_expr ($exprs, $env) {
-        return compile_expressions($exprs, $env);
-    }
 
     method compile ($exprs, $env, $on_exit) {
         push @queue => $on_exit, compile_expressions($exprs, $env);

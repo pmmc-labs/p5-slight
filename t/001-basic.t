@@ -6,9 +6,8 @@ use experimental qw[ class switch ];
 
 use Slight;
 
-my $r = Slight::Runtime->new->init;
-
-$r->compile($r->new_context, q[
+my $r   = Slight::Runtime->new->init;
+my $ctx = $r->spawn_context(q[
 
 (defun fact (n)
     (if (== n 0) 1
@@ -23,5 +22,5 @@ $r->compile($r->new_context, q[
 
 ]);
 
-say $r->run;
+say $r->run($ctx);
 

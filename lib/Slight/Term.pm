@@ -64,12 +64,14 @@ class Slight::Term::Literal :isa(Slight::Term) {
 
     method to_string { "${raw}" }
 }
-class Slight::Term::Num :isa(Slight::Term::Literal) {}
+
 class Slight::Term::Sym :isa(Slight::Term::Literal) {}
+class Slight::Term::Tag :isa(Slight::Term::Sym) {}
+
+class Slight::Term::Num :isa(Slight::Term::Literal) {}
 class Slight::Term::Str :isa(Slight::Term::Literal) {
     method to_string { sprintf '"%s"' => $self->raw }
 }
-
 class Slight::Term::Bool :isa(Slight::Term::Literal) {
     method is_true  {  $self->raw }
     method is_false { !$self->raw }
