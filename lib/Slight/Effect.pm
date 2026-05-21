@@ -17,6 +17,30 @@ class Slight::Effect {
     method to_string { sprintf '*{%s}' => __CLASS__ }
 }
 
+class Slight::Effect::SIGNAL :isa(Slight::Effect) {
+    field $alloc  :param :reader;
+
+    method handler  ($ctx, $action, $env, @args) {
+        given ($action->raw) {
+            when ('!HALT') {
+                $ctx->result = $args[0];
+                return ();
+            }
+            when ('!ERROR') {
+                $ctx->error = $args[0];
+                return ();
+            }
+        }
+    }
+
+    method provides {
+        return +{
+            '!HALT'  => $alloc->Tag('!HALT'),
+            '!ERROR' => $alloc->Tag('!ERROR'),
+        }
+    }
+}
+
 class Slight::Effect::TTY :isa(Slight::Effect) {
     field $alloc  :param :reader;
     field $input  :param :reader = \*STDIN;

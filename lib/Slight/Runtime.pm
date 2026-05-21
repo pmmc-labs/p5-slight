@@ -13,12 +13,6 @@ use Slight::Term;
 ## Runtime
 ## -----------------------------------------------------------------------------
 
-class Slight::Signal {
-    method to_string { sprintf '^{%s}' => __CLASS__ }
-}
-class Slight::Signal::HALT  :isa(Slight::Signal) {}
-class Slight::Signal::ERROR :isa(Slight::Signal) {}
-
 class Slight::Runtime::Program {
     field $source :param :reader;
     field $exprs  :param :reader;
@@ -36,6 +30,8 @@ class Slight::Runtime::Context {
 
     method result :lvalue { $result }
     method error  :lvalue { $error  }
+
+    method is_done { defined $result || defined $error }
 }
 
 class Slight::Runtime {
@@ -79,35 +75,28 @@ class Slight::Runtime {
     ## -------------------------------------------------------------------------
 
     method run ($ctx) {
+        my $SIG = Slight::Effect::SIGNAL->new( alloc => $alloc );
+
         $ctx->machine->compile(
             $ctx->program->exprs,
             $ctx->root_env,
-            Slight::Machine::Host( $ctx->root_env, Slight::Signal::HALT->new )
+            Slight::Machine::Host( $ctx->root_env, $SIG, $alloc->Tag('!HALT') )
         );
 
-        my $on_error = Slight::Machine::Host( $ctx->root_env, Slight::Signal::ERROR->new );
+        my $on_error = Slight::Machine::Host(
+            $ctx->root_env,
+            $SIG,
+            $alloc->Tag('!ERROR')
+        );
 
-        while ($ctx->machine->is_running) {
+        until ($ctx->is_done) {
             my $host = $ctx->machine->run_until_host( $on_error );
-            if ($host->[2] isa Slight::Signal) {
-                my (undef, $env, $sig, @args) = @$host;
-                given (blessed $sig) {
-                    when ('Slight::Signal::HALT') {
-                        return $args[0];
-                    }
-                    when ('Slight::Signal::ERROR') {
-                        die $args[0];
-                    }
-                    default {
-                        die "Unknown Signal ${sig}";
-                    }
-                }
-            }
-            else {
-                my (undef, $env, $effect, $action, @args) = @$host;
-                $ctx->machine->kontinue( $effect->handler( $ctx, $action, $env, @args ) );
-            }
+            my (undef, $env, $effect, $action, @args) = @$host;
+            my @next = $effect->handler( $ctx, $action, $env, @args );
+            $ctx->machine->kontinue( @next ) if @next;
         }
+
+        return $ctx;
     }
 
     ## -------------------------------------------------------------------------

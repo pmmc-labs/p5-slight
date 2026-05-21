@@ -22,5 +22,5 @@ my $ctx = $r->spawn_context(q[
 
 ]);
 
-say $r->run($ctx);
+say $r->run($ctx)->result;
 
