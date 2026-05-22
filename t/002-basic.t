@@ -13,10 +13,10 @@ my $countdown = $r->spawn_context(q[
 (defun countdown (n orig)
     (if (== n 0)
         (do
-            (say (~ (^PID) " is DONE!"))
-            (list 'PID: (^PID) 'end: n 'start: orig))
+            (say (~ (getpid) " is DONE!"))
+            (list 'PID: (getpid) 'end: n 'start: orig))
         (do
-            (say (~ (^PID) (~ " = ..." n)))
+            (say (~ (getpid) (~ " = ..." n)))
             (countdown (- n 1) orig))))
 
 ]);

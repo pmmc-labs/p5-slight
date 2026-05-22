@@ -9,22 +9,15 @@ use Slight;
 my $r   = Slight::Runtime->new->init;
 my $program = $r->spawn_context(q[
 
-(defun foo ()
-    (do
-        (say ($PID))
-        (say ($PID))
-    ))
 
-(foo)
 
 ]);
 
 $r->run($program);
 
-my $fork = $r->fork_context(
-    $program,
-    '(foo)'
-);
+my $fork = $r->fork_context($program, q[
+
+]);
 
 my @ctxs = $r->run_all($fork);
 

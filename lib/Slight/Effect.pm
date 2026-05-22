@@ -56,7 +56,7 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
                    Slight::Machine::EvalArgs($E, $alloc->List(@args));
         }
 
-        my sub _pid ($C, $E, @) {
+        my sub _getpid ($C, $E, @) {
             return Slight::Machine::Just(
                 $E, $alloc->Str(sprintf 'PID:%04d' => $C->PID)
             );
@@ -65,9 +65,9 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
         return +{
             '!HALT'  => $HALT,
             '!ERROR' => $ERROR,
-            'exit'   => $alloc->Procedure( $alloc->Sym('exit'),  \&_exit, is_operative => true ),
-            'raise'  => $alloc->Procedure( $alloc->Sym('raise'), \&raise, is_operative => true ),
-            '^PID'   => $alloc->Procedure( $alloc->Sym('^PID'),  \&_pid,  is_operative => true ),
+            'exit'   => $alloc->Procedure( $alloc->Sym('exit'),   \&_exit,   is_operative => true ),
+            'raise'  => $alloc->Procedure( $alloc->Sym('raise'),  \&raise,   is_operative => true ),
+            'getpid' => $alloc->Procedure( $alloc->Sym('getpid'), \&_getpid, is_operative => true ),
         }
     }
 }
