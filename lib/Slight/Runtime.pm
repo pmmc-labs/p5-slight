@@ -131,18 +131,6 @@ class Slight::Runtime {
 
     ## -------------------------------------------------------------------------
 
-    method execute ($ctx) {
-        $ctx->compile;
-
-        until ($ctx->is_halted) {
-            my ($HOST, $env, $effect, $action, @args) = $ctx->run_until_host->@*;
-            my @next = $effect->handler( $ctx, $action, $env, @args );
-            $ctx->kontinue( @next ) if @next;
-        }
-
-        return $ctx;
-    }
-
     method run {
         while (@running) {
             my $ctx  = shift @running;
@@ -226,6 +214,11 @@ class Slight::Runtime {
                    Slight::Machine::EvalExpr( $E, $alloc->Lambda( $p, $b, $E, $sym ) );
         }
 
+        my sub let  ($E, $sym, $value) {
+            return Slight::Machine::Bind( $E, $sym ),
+                   Slight::Machine::EvalExpr( $E, $value );
+        }
+
         my sub _if ($E, $cond, $if_true, $if_false) {
             return Slight::Machine::Cond( $E, $if_true, $if_false ),
                    Slight::Machine::EvalExpr( $E, $cond )
@@ -246,6 +239,7 @@ class Slight::Runtime {
                 'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
                 'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),
                 'defun'  => $alloc->Procedure( $alloc->Sym('defun'  ), \&defun,  is_operative => true ),
+                'let'    => $alloc->Procedure( $alloc->Sym('let'    ), \&let,    is_operative => true ),
                 'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
                 'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
 
