@@ -71,17 +71,20 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
     method handler  ($ctx, $action, $env, @args) {
         given ($action->raw) {
             when ('getpid') {
-                return Slight::Machine::Just(
-                    $env, $alloc->Str(sprintf 'PID:%04d' => $ctx->PID)
-                );
+                return Slight::Machine::Just( $env, $ctx->PID );
             }
             when ('fork') {
                 my ($expr) = @args;
                 return Slight::Machine::Just( $env,
-                    $alloc->Str( sprintf 'PID:%04d' =>
-                        $ctx->runtime->fork_context( $ctx, +[ $expr ], $env )->PID
-                    )
-                );
+                    $ctx->runtime->fork_context( $ctx, +[ $expr ], $env )->PID
+                )
+            }
+            when ('waitpid') {
+                my ($pid) = @args;
+                # TODO ... something here
+                $ctx->suspend;
+                $ctx->runtime->watch( $pid, $ctx );
+                return Slight::Machine::Drop( $env );
             }
         }
     }
@@ -90,12 +93,17 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
         # TODO:
         # - the PID should be a term that can be int/str when needed
 
-        my sub _getpid ($E, @)   { return Slight::Machine::Host($E, $self, $alloc->Sym('getpid')) }
-        my sub _fork ($E, $expr) { return Slight::Machine::Host($E, $self, $alloc->Sym('fork'), $expr) }
+        my sub _getpid  ($E, @)     { return Slight::Machine::Host($E, $self, $alloc->Sym('getpid')) }
+        my sub _fork    ($E, $expr) { return Slight::Machine::Host($E, $self, $alloc->Sym('fork'), $expr) }
+        my sub _waitpid ($E, $pid)  {
+            return Slight::Machine::Host($E, $self, $alloc->Sym('waitpid')),
+                   Slight::Machine::EvalExpr($E, $pid);
+        }
 
         return +{
-            'getpid' => $alloc->Procedure( $alloc->Sym('getpid'), \&_getpid, is_operative => true ),
-            'fork'   => $alloc->Procedure( $alloc->Sym('fork'),   \&_fork,   is_operative => true ),
+            'getpid'  => $alloc->Procedure( $alloc->Sym('getpid'),  \&_getpid,  is_operative => true ),
+            'fork'    => $alloc->Procedure( $alloc->Sym('fork'),    \&_fork,    is_operative => true ),
+            'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
         }
     }
 }

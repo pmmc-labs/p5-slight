@@ -25,6 +25,16 @@ class Slight::Term {
 }
 
 ## ------------------------------------
+## PIDs
+## ------------------------------------
+
+class Slight::Term::PID :isa(Slight::Term) {
+    field $raw :param :reader;
+
+    method to_string { sprintf '%s<%d>' => __CLASS__, $raw }
+}
+
+## ------------------------------------
 ## Environment
 ## ------------------------------------
 

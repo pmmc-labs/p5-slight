@@ -36,6 +36,6 @@ my @countdowns = map {
 
 my @ctxs = $r->run;
 
-say(sprintf 'PID:%04d = %s' => $_->PID, $_->result // $_->error )
+say(sprintf '%s = %s' => $_->PID, $_->result // $_->error )
     foreach @ctxs;
 

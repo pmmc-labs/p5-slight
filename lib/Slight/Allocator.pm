@@ -27,6 +27,13 @@ class Slight::Allocator {
     method True  { $True }
     method False { $False }
 
+    method PID {
+        state $PID_SEQ = 0;
+        my $pid  = ++$PID_SEQ;
+        my $hash = Slight::Term::PID->hash_of( $pid );
+        $terms{ $hash } //= Slight::Term::PID->new( raw => $pid, hash => $hash );
+    }
+
     method Num ($n) {
         my $hash = Slight::Term::Num->hash_of($n);
         $terms{ $hash } //= Slight::Term::Num->new( raw => $n, hash => $hash )

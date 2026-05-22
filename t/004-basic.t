@@ -9,14 +9,11 @@ use Slight;
 my $r   = Slight::Runtime->new->init;
 my $ctx = $r->spawn_context(q[
 
-(let x 10)
-(let y 20)
-
-(+ x y)
+    (getpid)
 
 ]);
 
 my @done = $r->run;
 
-say sprintf 'PID:%04d => %s' => $_->PID, $_->result // $_->error foreach @done;
+say sprintf '%s => %s' => $_->PID, $_->result // $_->error foreach @done;
 

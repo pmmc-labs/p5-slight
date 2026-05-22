@@ -62,7 +62,7 @@ sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
             (($depth - 1) ? ('  ' x ($depth - 1)) : '');
     }
     say sprintf "\e[38;2;75;75;75;m%04d ║\e[0m \e[38;2;125;125;125;m%05d ║\e[0m %s│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
-        $ctx->PID,
+        $ctx->PID->raw,
         $tick,
         ($depth ? ('  ' x $depth) : ''),
         (join ';' => opcode2rgb($op)),

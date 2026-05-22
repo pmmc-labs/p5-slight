@@ -14,25 +14,24 @@ use Slight::Term;
 ## -----------------------------------------------------------------------------
 
 class Slight::Runtime::Context {
-    our $PID_SEQ = 0;
-
-    field $PID      :reader;
-    field $machine  :reader;
     field $runtime  :param :reader;
     field $root_env :param :reader;
     field $program  :param :reader;
 
+    field $PID      :reader;
+    field $machine  :reader;
     field $on_exit  :param :reader = undef;
     field $on_error :param :reader = undef;
 
     ADJUST {
-        $PID = ++$PID_SEQ;
+        $PID = $runtime->alloc->PID;
         $on_exit  //= Slight::Machine::Host( $root_env, $runtime->SIGNAL, $runtime->SIGNAL->HALT  );
         $on_error //= Slight::Machine::Host( $root_env, $runtime->SIGNAL, $runtime->SIGNAL->ERROR );
         $machine = Slight::Machine->new( alloc => $runtime->alloc, context => $self );
     }
 
-    field $halted :reader(is_halted) = false;
+    field $halted  :reader(is_halted)  = false;
+    field $waiting :reader(is_waiting) = false;
     field $result;
     field $error;
     field $last_env;
@@ -44,13 +43,16 @@ class Slight::Runtime::Context {
     method halt    { $halted = true  }
     method restart { $halted = false }
 
+    method suspend { $waiting = true  }
+    method resume  { $waiting = false }
+
     method compile          { $machine->compile( $program, $root_env ) }
     method run_until_host   { $machine->run_until_host }
     method kontinue (@next) { $machine->kontinue( @next ) }
 
     method fork (%args) {
         return __CLASS__->new(
-            program  => ($args{program}  // die 'You must supply a program to fork'),
+            program  => $args{program},
             # copy these
             runtime  => $runtime,
             root_env => ($args{root_env} // ($last_env // $root_env)),
@@ -71,7 +73,10 @@ class Slight::Runtime {
     field @effects;
 
     field @running;
+    field @waiting;
     field @halted;
+
+    field %watchers;
 
     field $SIGNAL  :reader;
     field $CONSOLE :reader;
@@ -131,6 +136,10 @@ class Slight::Runtime {
 
     ## -------------------------------------------------------------------------
 
+    method watch ($pid, $to_notify) {
+        push @{ $watchers{ $pid->hash } //= +[] } => $to_notify;
+    }
+
     method run {
         while (@running) {
             my $ctx  = shift @running;
@@ -139,8 +148,17 @@ class Slight::Runtime {
             my @next = $effect->handler( $ctx, $action, $env, @args );
             $ctx->kontinue( @next ) if @next;
             if ($ctx->is_halted) {
+                if (my $ws = $watchers{ $ctx->PID->hash }) {
+                    #say "RESUMING!!!!!!!!!!!!!";
+                    unshift @running => map { $_->resume; $_ } reverse @$ws;
+                }
                 push @halted => $ctx;
-            } else {
+            }
+            elsif ($ctx->is_waiting) {
+                # do nothing atm
+                #say "WAITING!!!!!!!!!!!!!";
+            }
+            else {
                 push @running => $ctx;
             }
         }
