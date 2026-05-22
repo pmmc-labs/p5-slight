@@ -47,13 +47,19 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
 
     method provides {
 
-        my sub _exit ($E) {
+        my sub _exit ($C, $E) {
             return Slight::Machine::Host($E, $self, $HALT);
         }
 
-        my sub raise ($E, @args) {
+        my sub raise ($C, $E, @args) {
             return Slight::Machine::Host($E, $self, $ERROR),
                    Slight::Machine::EvalArgs($E, $alloc->List(@args));
+        }
+
+        my sub _pid ($C, $E, @) {
+            return Slight::Machine::Just(
+                $E, $alloc->Str(sprintf 'PID:%04d' => $C->PID)
+            );
         }
 
         return +{
@@ -61,6 +67,7 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
             '!ERROR' => $ERROR,
             'exit'   => $alloc->Procedure( $alloc->Sym('exit'),  \&_exit, is_operative => true ),
             'raise'  => $alloc->Procedure( $alloc->Sym('raise'), \&raise, is_operative => true ),
+            '^PID'   => $alloc->Procedure( $alloc->Sym('^PID'),  \&_pid,  is_operative => true ),
         }
     }
 }
@@ -94,22 +101,22 @@ class Slight::Effect::TTY :isa(Slight::Effect) {
     }
 
     method provides {
-        my sub _print ($E, @args) {
+        my sub _print ($C, $E, @args) {
             return Slight::Machine::Host($E, $self, $alloc->Sym('print')),
                    Slight::Machine::EvalArgs($E, $alloc->List(@args))
         }
 
-        my sub _warn ($E, @args) {
+        my sub _warn ($C, $E, @args) {
             return Slight::Machine::Host($E, $self, $alloc->Sym('warn')),
                    Slight::Machine::EvalArgs($E, $alloc->List(@args))
         }
 
-        my sub _say ($E, @args) {
+        my sub _say ($C, $E, @args) {
             return Slight::Machine::Host($E, $self, $alloc->Sym('say')),
                    Slight::Machine::EvalArgs($E, $alloc->List(@args))
         }
 
-        my sub _readline ($E) { return Slight::Machine::Host($E, $self, $alloc->Sym('readline')) }
+        my sub _readline ($C, $E) { return Slight::Machine::Host($E, $self, $alloc->Sym('readline')) }
 
         return +{
             'print'    => $alloc->Procedure( $alloc->Sym('print'   ), \&_print,    is_operative => true ),

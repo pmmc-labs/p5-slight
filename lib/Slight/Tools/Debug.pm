@@ -25,7 +25,7 @@ sub opcode2rgb ($op) {
     return hex2rgb("FFCC00") if $op eq Slight::Machine::LEAVE_SCOPE;
 }
 
-sub debug_queue ($tick, @queue) {
+sub debug_queue ($ctx, $tick, @queue) {
     say '─' x 120;
     say "QUEUE ╭",('─' x 113),"\n      ├─",
         (join "\n      ├─" =>
@@ -44,39 +44,40 @@ sub debug_queue ($tick, @queue) {
     say '─' x 120;
 }
 
-sub debug_step ($depth, $tick, $op, $env, @stack) {
+sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
     state $cap_it = false;
+    state $PREFIX = "\e[38;2;75;75;75;m.... ┆\e[38;2;125;125;125;m ..... ┆\e[0m ";
 
     if ($tick == 1 || $cap_it) {
-        say sprintf "%s      ╭─────────────┬────────╮",
+        say sprintf "${PREFIX}%s╭─────────────┬────────╮",
             ($depth ? ('  ' x $depth) : '');
         $cap_it = false;
     }
     if ($op eq Slight::Machine::LEAVE_SCOPE) {
-        say sprintf "%s      ╭─┴─────────────┴────────╯",
+        say sprintf "${PREFIX}%s╭─┴─────────────┴────────╯",
             ($depth ? ('  ' x $depth) : '');
     }
     if ($op eq Slight::Machine::ENTER_SCOPE && Slight::DEBUG < 2) {
-        say sprintf "%s    ╰────────────────────────╮",
-            ($depth ? ('  ' x $depth) : '');
+        say sprintf "${PREFIX}%s╰────────────────────────╮",
+            (($depth - 1) ? ('  ' x ($depth - 1)) : '');
     }
-    say sprintf "%s\e[38;2;%s;m%05d \e[0m│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
-        ($depth ? ('  ' x $depth) : ''),
-        (join ';' => 120),
+    say sprintf "\e[38;2;75;75;75;m%04d ┆\e[0m \e[38;2;125;125;125;m%05d ┆\e[0m %s│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+        $ctx->PID,
         $tick,
+        ($depth ? ('  ' x $depth) : ''),
         (join ';' => opcode2rgb($op)),
         $op,
         (join ';' => hex2rgb($env->hash)),
         substr($env->hash, 0, 6),
         join ', ' => map $_->to_string, @stack;
     if ($op eq Slight::Machine::HOST) {
-        say sprintf "%s      ╰─────────────┴────────╯",
+        say sprintf "${PREFIX}%s╰─────────────┴────────╯",
             ($depth ? ('  ' x $depth) : '');
         $cap_it = true;
     }
 }
 
-sub debug_bind ($depth, $tick, $name, $env, $local, %local) {
+sub debug_bind ($ctx, $depth, $tick, $name, $env, $local, %local) {
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ BIND *%s" => (join ';' => 120), $tick, $name->to_string;
@@ -92,7 +93,7 @@ sub debug_bind ($depth, $tick, $name, $env, $local, %local) {
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
 }
 
-sub debug_call ($depth, $tick, $call, $env, $local, %local) {
+sub debug_call ($ctx, $depth, $tick, $call, $env, $local, %local) {
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ APPLY &%s" => (join ';' => 120), $tick, ($call->name // '__ANON__');

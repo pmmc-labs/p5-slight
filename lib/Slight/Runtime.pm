@@ -14,23 +14,22 @@ use Slight::Term;
 ## -----------------------------------------------------------------------------
 
 class Slight::Runtime::Context {
-    field $PID      :param :reader;
-    field $SIGNAL   :param :reader;
+    our $PID_SEQ = 0;
+
+    field $PID      :reader;
+    field $machine  :reader;
     field $runtime  :param :reader;
     field $root_env :param :reader;
-    field $machine  :param :reader;
     field $program  :param :reader;
 
     field $on_exit  :param :reader = undef;
     field $on_error :param :reader = undef;
 
     ADJUST {
-        $on_exit  //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->HALT  );
-        $on_error //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->ERROR );
-
-        $root_env = $runtime->alloc->Env( $root_env,
-            '$PID' => $runtime->alloc->Str(sprintf 'PID:%04d' => $PID),
-        );
+        $PID = ++$PID_SEQ;
+        $on_exit  //= Slight::Machine::Host( $root_env, $runtime->SIGNAL, $runtime->SIGNAL->HALT  );
+        $on_error //= Slight::Machine::Host( $root_env, $runtime->SIGNAL, $runtime->SIGNAL->ERROR );
+        $machine = Slight::Machine->new( alloc => $runtime->alloc, context => $self );
     }
 
     field $halted :reader(is_halted) = false;
@@ -45,15 +44,24 @@ class Slight::Runtime::Context {
     method halt    { $halted = true  }
     method restart { $halted = false }
 
-    method compile {
-        $machine->compile( $program, $root_env, $on_exit );
-    }
-
-    method run_until_host {
-        $machine->run_until_host( $on_error );
-    }
-
+    method compile          { $machine->compile( $program, $root_env ) }
+    method run_until_host   { $machine->run_until_host }
     method kontinue (@next) { $machine->kontinue( @next ) }
+
+    method fork (%args) {
+        return __CLASS__->new(
+            program  => ($args{program}  // die 'You must supply a program to fork'),
+            # copy these
+            runtime  => $runtime,
+            root_env => ($last_env // $root_env),
+            # TODO:
+            # - these should return to the
+            #   parent context, and not just
+            #   copy these
+            on_exit  => $on_exit,
+            on_error => $on_error,
+        );
+    }
 }
 
 class Slight::Runtime {
@@ -62,8 +70,8 @@ class Slight::Runtime {
     field @environment;
     field @effects;
 
-    field $SIGNAL;
-    field $CONSOLE;
+    field $SIGNAL  :reader;
+    field $CONSOLE :reader;
 
     ADJUST {
         $alloc  //= Slight::Allocator->new;
@@ -73,17 +81,24 @@ class Slight::Runtime {
 
     ## -------------------------------------------------------------------------
 
-    method spawn_context ($src, $env=undef) {
-        state $PID_SEQ = 0;
-
-        $env //= $self->current_env;
-
+    method spawn_context ($src) {
         my $ctx = Slight::Runtime::Context->new(
-            PID      => ++$PID_SEQ,
-            SIGNAL   => $SIGNAL,
             runtime  => $self,
-            root_env => $env,
-            machine  => Slight::Machine->new( alloc => $alloc ),
+            root_env => $self->current_env,
+            program  => +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ]
+        );
+
+        if (Slight::DEBUG) {
+            Slight::DEBUG_STEP && $ctx->machine->watch(step => \&Slight::Tools::Debug::debug_step);
+            Slight::DEBUG_BIND && $ctx->machine->watch(bind => \&Slight::Tools::Debug::debug_bind);
+            Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
+        }
+
+        return $ctx;
+    }
+
+    method fork_context ($parent, $src) {
+        my $ctx = $parent->fork(
             program  => +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ]
         );
 
@@ -195,25 +210,25 @@ class Slight::Runtime {
         my sub cons ($h, $t) { $alloc->Cons( $h, $t ) }
         my sub list (@items) { $alloc->List( @items ) }
 
-        my sub lambda ($E, $p, $b) {
+        my sub lambda ($C, $E, $p, $b) {
             Slight::Machine::Just( $E, $alloc->Lambda( $p, $b, $E ) )
         }
 
-        my sub quote  ($E, @terms) {
+        my sub quote  ($C, $E, @terms) {
             Slight::Machine::Just( $E, (scalar @terms == 1) ? $terms[0] : $alloc->List(@terms) )
         }
 
-        my sub defun  ($E, $sym, $p, $b) {
+        my sub defun  ($C, $E, $sym, $p, $b) {
             return Slight::Machine::Bind( $E, $sym ),
                    Slight::Machine::EvalExpr( $E, $alloc->Lambda( $p, $b, $E, $sym ) );
         }
 
-        my sub _if ($E, $cond, $if_true, $if_false) {
+        my sub _if ($C, $E, $cond, $if_true, $if_false) {
             return Slight::Machine::Cond( $E, $if_true, $if_false ),
                    Slight::Machine::EvalExpr( $E, $cond )
         }
 
-        my sub _do ($E, @exprs) {
+        my sub _do ($C, $E, @exprs) {
             my @progn = reverse map {
                 Slight::Machine::Drop($E),
                 Slight::Machine::EvalExpr($E, $_)

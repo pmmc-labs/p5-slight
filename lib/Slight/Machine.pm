@@ -11,7 +11,8 @@ use Slight::Allocator;
 ## ------------------------------------------
 
 class Slight::Machine {
-    field $alloc :param :reader;
+    field $context :param :reader;
+    field $alloc   :param :reader;
 
     field $tick = 0;
     field @queue;
@@ -75,7 +76,7 @@ class Slight::Machine {
 
     method trigger ($event, @args) {
         return unless exists $watchers{$event};
-        $_->((scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
+        $_->($context, (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
             foreach $watchers{$event}->@*;
     }
 
@@ -125,12 +126,12 @@ class Slight::Machine {
 
     method kontinue (@konts) { push @queue => @konts }
 
-    method compile ($exprs, $env, $on_exit) {
-        push @queue => $on_exit, compile_expressions($exprs, $env);
+    method compile ($exprs, $env) {
+        push @queue => $context->on_exit, compile_expressions($exprs, $env);
         return $self;
     }
 
-    method run_until_host ($on_error) {
+    method run_until_host {
         while (@queue) {
             $tick++;
             my $next = pop @queue;
@@ -141,7 +142,7 @@ class Slight::Machine {
                     return $next;
                 }
                 when (ERROR) {
-                    return Host( @$on_error, $next );
+                    return Host( $context->on_error->@*, $next );
                 }
                 when (JUST) {
                     # append the stack ...
@@ -230,7 +231,7 @@ class Slight::Machine {
                 given (blessed $call) {
                     when ('Slight::Term::Procedure') {
                         if ($call->is_operative) {
-                            return $call->body->( @args );
+                            return $call->body->( $context, @args );
                         } else {
                             return Just( $env, $call->body->( @args ) );
                         }
