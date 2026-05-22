@@ -58,8 +58,8 @@ class Slight::Runtime::Context {
             # - these should return to the
             #   parent context, and not just
             #   copy these
-            on_exit  => $on_exit,
-            on_error => $on_error,
+            #on_exit  => $on_exit,
+            #on_error => $on_error,
         );
     }
 }

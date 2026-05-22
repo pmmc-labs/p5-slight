@@ -10,14 +10,14 @@ my $r = Slight::Runtime->new->init;
 
 my $countdown = $r->spawn_context(q[
 
-(defun countdown (n)
+(defun countdown (n orig)
     (if (== n 0)
         (do
             (say (~ (^PID) " is DONE!"))
-            (^PID))
+            (list 'PID: (^PID) 'end: n 'start: orig))
         (do
             (say (~ (^PID) (~ " = ..." n)))
-            (countdown (- n 1)))))
+            (countdown (- n 1) orig))))
 
 ]);
 
@@ -26,9 +26,10 @@ my $ctx = $r->run($countdown);
 say "COMPILED: ", $ctx->last_env;
 
 my @countdowns = map {
+    my $x = int(rand(10));
     $r->fork_context(
         $ctx,
-        (sprintf '(countdown %d)' => int(rand(10)))
+        (sprintf '(countdown %d %d)' => $x, $x)
     )
 } 1 .. 10;
 
