@@ -231,7 +231,7 @@ class Slight::Machine {
                 given (blessed $call) {
                     when ('Slight::Term::Procedure') {
                         if ($call->is_operative) {
-                            return $call->body->( $context, @args );
+                            return $call->body->( @args );
                         } else {
                             return Just( $env, $call->body->( @args ) );
                         }

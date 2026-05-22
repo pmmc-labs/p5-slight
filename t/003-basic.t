@@ -7,19 +7,26 @@ use experimental qw[ class switch ];
 use Slight;
 
 my $r   = Slight::Runtime->new->init;
-my $program = $r->spawn_context(q[
+my $ctx = $r->spawn_context(q[
 
+    (defun adder (x y) (do
+        (say (~
+                (~ "adder@" (getpid))
+                (~ " with"
+                    (~
+                        (~ " X: " x)
+                        (~ " Y: " y)))))
+        (+ x y)))
 
+    (list
+        (fork (adder 10   20))
+        (fork (adder 100  200))
+        (fork (adder 1000 2000))
+    )
 
 ]);
 
-$r->run($program);
+my @done = $r->run;
 
-my $fork = $r->fork_context($program, q[
-
-]);
-
-my @ctxs = $r->run_all($fork);
-
-say $_->result // $_->error foreach @ctxs;
+say sprintf 'PID:%04d => %s' => $_->PID, $_->result // $_->error foreach @done;
 

@@ -46,7 +46,7 @@ sub debug_queue ($ctx, $tick, @queue) {
 
 sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
     state $cap_it = false;
-    state $PREFIX = "\e[38;2;75;75;75;m.... ┆\e[38;2;125;125;125;m ..... ┆\e[0m ";
+    state $PREFIX = "\e[38;2;75;75;75;m.... ║\e[38;2;125;125;125;m ..... ║\e[0m ";
 
     if ($tick == 1 || $cap_it) {
         say sprintf "${PREFIX}%s╭─────────────┬────────╮",
@@ -61,7 +61,7 @@ sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
         say sprintf "${PREFIX}%s╰────────────────────────╮",
             (($depth - 1) ? ('  ' x ($depth - 1)) : '');
     }
-    say sprintf "\e[38;2;75;75;75;m%04d ┆\e[0m \e[38;2;125;125;125;m%05d ┆\e[0m %s│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
+    say sprintf "\e[38;2;75;75;75;m%04d ║\e[0m \e[38;2;125;125;125;m%05d ║\e[0m %s│\e[38;2;%s;m %-11s \e[0m│\e[38;2;%s;m %6s \e[0m│ %s",
         $ctx->PID,
         $tick,
         ($depth ? ('  ' x $depth) : ''),

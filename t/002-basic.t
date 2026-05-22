@@ -21,7 +21,7 @@ my $countdown = $r->spawn_context(q[
 
 ]);
 
-my $ctx = $r->run($countdown);
+my ($ctx) = $r->run;
 
 say "COMPILED: ", $ctx->last_env;
 
@@ -29,11 +29,12 @@ my @countdowns = map {
     my $x = int(rand(10));
     $r->fork_context(
         $ctx,
-        (sprintf '(countdown %d %d)' => $x, $x)
+        (sprintf '(countdown %d %d)' => $x, $x),
+        $ctx->last_env
     )
 } 1 .. 10;
 
-my @ctxs = $r->run_all(@countdowns);
+my @ctxs = $r->run;
 
 say(sprintf 'PID:%04d = %s' => $_->PID, $_->result // $_->error )
     foreach @ctxs;

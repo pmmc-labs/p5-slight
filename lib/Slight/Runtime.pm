@@ -53,7 +53,7 @@ class Slight::Runtime::Context {
             program  => ($args{program}  // die 'You must supply a program to fork'),
             # copy these
             runtime  => $runtime,
-            root_env => ($last_env // $root_env),
+            root_env => ($args{root_env} // ($last_env // $root_env)),
             # TODO:
             # - these should return to the
             #   parent context, and not just
@@ -70,11 +70,16 @@ class Slight::Runtime {
     field @environment;
     field @effects;
 
+    field @running;
+    field @halted;
+
     field $SIGNAL  :reader;
     field $CONSOLE :reader;
+    field $SYSTEM  :reader;
 
     ADJUST {
         $alloc  //= Slight::Allocator->new;
+        $SYSTEM  = Slight::Effect::SYSTEM->new( alloc => $alloc );
         $SIGNAL  = Slight::Effect::SIGNAL->new( alloc => $alloc );
         $CONSOLE = Slight::Effect::TTY->new( alloc => $alloc );
     }
@@ -82,10 +87,13 @@ class Slight::Runtime {
     ## -------------------------------------------------------------------------
 
     method spawn_context ($src) {
+
+        my $program = ref $src ? $src : +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ];
+
         my $ctx = Slight::Runtime::Context->new(
             runtime  => $self,
             root_env => $self->current_env,
-            program  => +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ]
+            program  => $program
         );
 
         if (Slight::DEBUG) {
@@ -94,12 +102,19 @@ class Slight::Runtime {
             Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
         }
 
+        $ctx->compile;
+
+        push @running => $ctx;
         return $ctx;
     }
 
-    method fork_context ($parent, $src) {
+    method fork_context ($parent, $src, $env) {
+
+        my $program = ref $src ? $src : +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ];
+
         my $ctx = $parent->fork(
-            program  => +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ]
+            program  => $program,
+            root_env => $env,
         );
 
         if (Slight::DEBUG) {
@@ -108,12 +123,15 @@ class Slight::Runtime {
             Slight::DEBUG_CALL && $ctx->machine->watch(call => \&Slight::Tools::Debug::debug_call);
         }
 
+        $ctx->compile;
+
+        push @running => $ctx;
         return $ctx;
     }
 
     ## -------------------------------------------------------------------------
 
-    method run ($ctx) {
+    method execute ($ctx) {
         $ctx->compile;
 
         until ($ctx->is_halted) {
@@ -125,35 +143,20 @@ class Slight::Runtime {
         return $ctx;
     }
 
-    method run_all (@all) {
-
-        my @done;
-        my @contexts = @all;
-
-        $_->compile foreach @contexts;
-
-        while (@contexts) {
-            my $ctx = shift @contexts;
+    method run {
+        while (@running) {
+            my $ctx  = shift @running;
+            my $host = $ctx->run_until_host;
+            my ($HOST, $env, $effect, $action, @args) = @$host;
+            my @next = $effect->handler( $ctx, $action, $env, @args );
+            $ctx->kontinue( @next ) if @next;
             if ($ctx->is_halted) {
-                push @done => $ctx;
+                push @halted => $ctx;
             } else {
-                #say '-' x 100;
-                #say join ', ' => map $_->PID, ($ctx, @contexts);
-                #say '-' x 100;
-                #say "RUNNING: ", join ' : ' => $ctx->PID, $ctx;
-                my $host = $ctx->run_until_host;
-                #say "GOT: ", join ', ' => @$host;
-                my ($HOST, $env, $effect, $action, @args) = @$host;
-                #say "Running Effect: $effect";
-                my @next = $effect->handler( $ctx, $action, $env, @args );
-                #say "NEXT: ", join "\n" => map { join ', ' => @$_ } @next;
-                $ctx->kontinue( @next ) if @next;
-                #my $x = <>;
-                push @contexts => $ctx;
+                push @running => $ctx;
             }
         }
-
-        return @done;
+        return @halted;
     }
 
     ## -------------------------------------------------------------------------
@@ -169,7 +172,7 @@ class Slight::Runtime {
     }
 
     method initialize_core_effects {
-        push @effects => $SIGNAL, $CONSOLE;
+        push @effects => $SYSTEM, $SIGNAL, $CONSOLE;
         foreach my $effect (@effects) {
             push @environment => $alloc->Env( $environment[-1], $effect->provides->%* );
         }
@@ -210,25 +213,25 @@ class Slight::Runtime {
         my sub cons ($h, $t) { $alloc->Cons( $h, $t ) }
         my sub list (@items) { $alloc->List( @items ) }
 
-        my sub lambda ($C, $E, $p, $b) {
+        my sub lambda ($E, $p, $b) {
             Slight::Machine::Just( $E, $alloc->Lambda( $p, $b, $E ) )
         }
 
-        my sub quote  ($C, $E, @terms) {
+        my sub quote  ($E, @terms) {
             Slight::Machine::Just( $E, (scalar @terms == 1) ? $terms[0] : $alloc->List(@terms) )
         }
 
-        my sub defun  ($C, $E, $sym, $p, $b) {
+        my sub defun  ($E, $sym, $p, $b) {
             return Slight::Machine::Bind( $E, $sym ),
                    Slight::Machine::EvalExpr( $E, $alloc->Lambda( $p, $b, $E, $sym ) );
         }
 
-        my sub _if ($C, $E, $cond, $if_true, $if_false) {
+        my sub _if ($E, $cond, $if_true, $if_false) {
             return Slight::Machine::Cond( $E, $if_true, $if_false ),
                    Slight::Machine::EvalExpr( $E, $cond )
         }
 
-        my sub _do ($C, $E, @exprs) {
+        my sub _do ($E, @exprs) {
             my @progn = reverse map {
                 Slight::Machine::Drop($E),
                 Slight::Machine::EvalExpr($E, $_)

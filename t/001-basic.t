@@ -28,7 +28,7 @@ my $fib = $r->spawn_context(q[
 
 ]);
 
-my @ctxs = $r->run_all($fact, $fib);
+my @ctxs = $r->run;
 
 say $_->result foreach @ctxs;
 
