@@ -181,6 +181,12 @@ class Slight::Machine {
                     push @queue => $self->step( $next );
                 }
             }
+
+            if (Slight::DEBUG_QUEUE) {
+                foreach my $k (@queue) {
+                    say join ', ' => @$k;
+                }
+            }
         }
     }
 

@@ -31,22 +31,36 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
     method handler  ($ctx, $action, $env, @args) {
         given ($action->raw) {
             when ('!HALT') {
-                $ctx->result = $args[0];
+                $ctx->result = $args[0] // $alloc->Nil;
                 $ctx->last_env = $env;
+                $ctx->halt;
                 return ();
             }
             when ('!ERROR') {
                 $ctx->error = $args[0];
                 $ctx->last_env = $env;
+                $ctx->halt;
                 return ();
             }
         }
     }
 
     method provides {
+
+        my sub _exit ($E) {
+            return Slight::Machine::Host($E, $self, $HALT);
+        }
+
+        my sub raise ($E, @args) {
+            return Slight::Machine::Host($E, $self, $ERROR),
+                   Slight::Machine::EvalArgs($E, $alloc->List(@args));
+        }
+
         return +{
             '!HALT'  => $HALT,
             '!ERROR' => $ERROR,
+            'exit'   => $alloc->Procedure( $alloc->Sym('exit'),  \&_exit, is_operative => true ),
+            'raise'  => $alloc->Procedure( $alloc->Sym('raise'), \&raise, is_operative => true ),
         }
     }
 }

@@ -39,7 +39,7 @@ class Slight::Term::Env :isa(Slight::Term) {
             if (defined $parent) {
                 return $parent->lookup($sym);
             } else {
-                die "Could not find symbol(${sym}) in env";
+                die "Could not find symbol(${sym}) in env: ".$self->to_string;
             }
         }
     }

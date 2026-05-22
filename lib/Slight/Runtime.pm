@@ -27,20 +27,23 @@ class Slight::Runtime::Context {
     ADJUST {
         $on_exit  //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->HALT  );
         $on_error //= Slight::Machine::Host( $root_env, $SIGNAL, $SIGNAL->ERROR );
+
+        $root_env = $runtime->alloc->Env( $root_env,
+            '$PID' => $runtime->alloc->Str(sprintf 'PID:%04d' => $PID),
+        );
     }
 
+    field $halted :reader(is_halted) = false;
     field $result;
     field $error;
     field $last_env;
 
-    method result :lvalue { $result }
-    method error  :lvalue { $error  }
-
+    method result   :lvalue { $result }
+    method error    :lvalue { $error  }
     method last_env :lvalue { $last_env }
 
-    method is_done { defined $result || defined $error }
-
-    method is_running { $machine->in_running }
+    method halt    { $halted = true  }
+    method restart { $halted = false }
 
     method compile {
         $machine->compile( $program, $root_env, $on_exit );
@@ -59,8 +62,13 @@ class Slight::Runtime {
     field @environment;
     field @effects;
 
+    field $SIGNAL;
+    field $CONSOLE;
+
     ADJUST {
         $alloc  //= Slight::Allocator->new;
+        $SIGNAL  = Slight::Effect::SIGNAL->new( alloc => $alloc );
+        $CONSOLE = Slight::Effect::TTY->new( alloc => $alloc );
     }
 
     ## -------------------------------------------------------------------------
@@ -72,7 +80,7 @@ class Slight::Runtime {
 
         my $ctx = Slight::Runtime::Context->new(
             PID      => ++$PID_SEQ,
-            SIGNAL   => Slight::Effect::SIGNAL->new( alloc => $alloc ),
+            SIGNAL   => $SIGNAL,
             runtime  => $self,
             root_env => $env,
             machine  => Slight::Machine->new( alloc => $alloc ),
@@ -93,7 +101,7 @@ class Slight::Runtime {
     method run ($ctx) {
         $ctx->compile;
 
-        until ($ctx->is_done) {
+        until ($ctx->is_halted) {
             my ($HOST, $env, $effect, $action, @args) = $ctx->run_until_host->@*;
             my @next = $effect->handler( $ctx, $action, $env, @args );
             $ctx->kontinue( @next ) if @next;
@@ -111,7 +119,7 @@ class Slight::Runtime {
 
         while (@contexts) {
             my $ctx = shift @contexts;
-            if ($ctx->is_done) {
+            if ($ctx->is_halted) {
                 push @done => $ctx;
             } else {
                 #say '-' x 100;
@@ -146,7 +154,7 @@ class Slight::Runtime {
     }
 
     method initialize_core_effects {
-        push @effects => Slight::Effect::TTY->new( alloc => $alloc );
+        push @effects => $SIGNAL, $CONSOLE;
         foreach my $effect (@effects) {
             push @environment => $alloc->Env( $environment[-1], $effect->provides->%* );
         }

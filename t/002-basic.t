@@ -13,10 +13,10 @@ my $countdown = $r->spawn_context(q[
 (defun countdown (label n)
     (if (== n 0)
         (do
-            (say (~ label " is DONE!"))
+            (say (~ $PID " is DONE!"))
             label)
         (do
-            (say (~ label (~ " = ..." n)))
+            (say (~ $PID (~ " = ..." n)))
             (countdown label (- n 1)))))
 
 ]);
@@ -34,6 +34,6 @@ my @countdowns = map {
 
 my @ctxs = $r->run_all(@countdowns);
 
-say(sprintf 'PID:%d = %s' => $_->PID, $_->result // $_->error )
+say(sprintf 'PID:%04d = %s' => $_->PID, $_->result // $_->error )
     foreach @ctxs;
 
