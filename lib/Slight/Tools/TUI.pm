@@ -181,11 +181,19 @@ class TextArea {
     }
 }
 
+class Inline {
+    field $contents :param :reader;
+
+    method draw {
+        $contents->render(true)
+    }
+}
+
 class Positioned {
     field $position :param :reader;
     field $contents :param :reader;
 
-    method render {
+    method draw {
         join '' =>
             ANSI::save_cursor,
             ANSI::format_move_cursor(@$position),
@@ -194,11 +202,13 @@ class Positioned {
     }
 }
 
-say TextLine->with(
-    Style->as(FG($PALETTE{deepCerulean}), BOLD, UNDERLINE), 'Hello',
-    Style->as(BG($PALETTE{cardinalRed}), NOT_UNDERLINE), ' ',
-    Style->as(FG($PALETTE{ghostWhite}), ITALIC), 'World ',
-)->render;
+say Inline->new(
+    contents => TextLine->with(
+        Style->as(FG($PALETTE{deepCerulean}), BOLD, UNDERLINE), 'Hello',
+        Style->as(BG($PALETTE{cardinalRed}), NOT_UNDERLINE), ' ',
+        Style->as(FG($PALETTE{ghostWhite}), ITALIC), 'World ',
+    )
+)->draw;
 
 print Positioned->new(
     position => [ 2, 80 ],
@@ -209,12 +219,14 @@ print Positioned->new(
         width    => 10,
         contents => +[qw[ hello world goodbye all ]],
     )
-)->render();
+)->draw;
 
-say TextLine->with(
-    Style->as(FG($PALETTE{heliotropePurple}), BOLD), 'Goodbye ',
-    Style->as(FG($PALETTE{flaxFlowerBlue}), ITALIC), 'World ',
-)->render;
+say Inline->new(
+    contents => TextLine->with(
+        Style->as(FG($PALETTE{heliotropePurple}), BOLD), 'Goodbye ',
+        Style->as(FG($PALETTE{flaxFlowerBlue}), ITALIC), 'World ',
+    )
+)->draw;
 
 ## -----------------------------------------------------------------------------
 ## Static data below ...
