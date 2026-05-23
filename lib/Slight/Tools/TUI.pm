@@ -94,22 +94,13 @@ class Style {
 }
 
 class Text {
-    field $style    :param :reader;
     field $contents :param :reader;
 
-    method render ($) {
-        join '' => $style->apply, $contents, $style->clear;
+    method length {
+        List::Util::sum( map length, grep !blessed($_), @$contents )
     }
 
-    sub with ($, $style, $contents) {
-        Text->new( style => $style, contents => $contents )
-    }
-}
-
-class TextLine {
-    field $contents :param :reader;
-
-    method render ($) {
+    method render ($=undef) {
         my @output;
         my @items = @$contents;
         my $style;
@@ -129,7 +120,7 @@ class TextLine {
     }
 
     sub with ($, @contents) {
-        TextLine->new( contents => \@contents )
+        Text->new( contents => \@contents )
     }
 }
 
@@ -181,52 +172,76 @@ class TextArea {
     }
 }
 
-class Inline {
-    field $contents :param :reader;
+class Screen {
+    field $height :reader;
+    field $width  :reader;
 
-    method draw {
-        $contents->render(true)
+    ADJUST {
+        ($width, $height) = ANSI::get_terminal_size;
     }
-}
 
-class Positioned {
-    field $position :param :reader;
-    field $contents :param :reader;
+    method init {
+        print
+            ANSI::enable_alt_buf,
+            ANSI::clear_screen,
+            ANSI::home_cursor;
+    }
 
-    method draw {
-        join '' =>
+    method inline ($item) {
+        print blessed $item ? $item->render(true) : $item
+    }
+
+    method line_break { print "\n" }
+
+    method at ($pos, $item) {
+        print join '' =>
             ANSI::save_cursor,
-            ANSI::format_move_cursor(@$position),
-            $contents->render(false),
+            ANSI::format_move_cursor(@$pos),
+            (blessed $item ? $item->render(false) : $item),
             ANSI::restore_cursor;
     }
+
+    END {
+        ANSI::disable_alt_buf;
+    }
 }
 
-say Inline->new(
-    contents => TextLine->with(
-        Style->as(FG($PALETTE{deepCerulean}), BOLD, UNDERLINE), 'Hello',
-        Style->as(BG($PALETTE{cardinalRed}), NOT_UNDERLINE), ' ',
-        Style->as(FG($PALETTE{ghostWhite}), ITALIC), 'World ',
-    )
-)->draw;
+my $screen = Screen->new;
 
-print Positioned->new(
-    position => [ 2, 80 ],
-    contents =>
-    TextArea->new(
-        style    => Style->as(BG($PALETTE{deepCerulean}), BOLD),
-        height   => 5,
-        width    => 10,
-        contents => +[qw[ hello world goodbye all ]],
-    )
-)->draw;
+$screen->init;
 
-say Inline->new(
-    contents => TextLine->with(
-        Style->as(FG($PALETTE{heliotropePurple}), BOLD), 'Goodbye ',
-        Style->as(FG($PALETTE{flaxFlowerBlue}), ITALIC), 'World ',
+$screen->inline(
+    Text->with(
+        Style->as(ITALIC),
+        Style->as(FG($PALETTE{raspberryPink})),   'R',
+        Style->as(FG($PALETTE{electricLime})),    'E',
+        Style->as(FG($PALETTE{babyBlueEyes})),    'P',
+        Style->as(FG($PALETTE{twilightLavender})),'L',
     )
-)->draw;
+);
+
+$screen->line_break;
+
+my @history;
+while (true) {
+    $screen->inline( Text->with( Style->as(FG($PALETTE{acidGreen})), '> ' ) );
+    my $input = <>;
+    chomp $input;
+    $screen->inline( Text->with( Style->as(FG($PALETTE{deepCerulean})), $input ) );
+    $screen->line_break;
+
+    push @history => $input;
+
+    $screen->at(
+        [ 2, 80 ],
+        TextArea->new(
+            style    => Style->as(BG($PALETTE{yellowGreen})),
+            contents => \@history,
+            height   => (scalar @history),
+            width    => 40,
+        )
+    );
+}
 
 ## -----------------------------------------------------------------------------
 ## Static data below ...
