@@ -89,11 +89,15 @@ class Slight::Runtime {
         $CONSOLE = Slight::Effect::TTY->new( alloc => $alloc );
     }
 
+    method parse_source ($src) {
+        Slight::Parser->new( alloc => $alloc )->parse( $src )
+    }
+
     ## -------------------------------------------------------------------------
 
     method spawn_context ($src) {
 
-        my $program = ref $src ? $src : +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ];
+        my $program = ref $src ? $src : +[ $self->parse_source($src) ];
 
         my $ctx = Slight::Runtime::Context->new(
             runtime  => $self,
@@ -115,7 +119,7 @@ class Slight::Runtime {
 
     method fork_context ($parent, $src, $env) {
 
-        my $program = ref $src ? $src : +[ Slight::Parser->new( alloc => $alloc )->parse( $src ) ];
+        my $program = ref $src ? $src : +[ $self->parse_source($src) ];
 
         my $ctx = $parent->fork(
             program  => $program,

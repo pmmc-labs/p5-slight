@@ -8,7 +8,7 @@ use experimental qw[ class switch ];
 use List::Util ();
 
 
-package ANSI {
+package Slight::Tools::TUI::ANSI {
     use Term::ReadKey qw[ GetTerminalSize ReadMode ];
 
     # Terminal setup
@@ -77,23 +77,23 @@ use constant NOT_INVERT    => 27;
 use constant NOT_HIDE      => 28;
 use constant NOT_STRIKE    => 29;
 
-class Style {
+class Slight::Tools::TUI::Style {
     field $styles :reader :param;
 
     method apply {
         return '' unless @$styles;
-        return ANSI::format_styles( @$styles );
+        return Slight::Tools::TUI::ANSI::format_styles( @$styles );
     }
 
     method clear {
         return '' unless @$styles;
-        return ANSI::style_reset;
+        return Slight::Tools::TUI::ANSI::style_reset;
     }
 
-    sub as ($, @styles) { Style->new( styles => \@styles ) }
+    sub as ($, @styles) { Slight::Tools::TUI::Style->new( styles => \@styles ) }
 }
 
-class Text {
+class Slight::Tools::TUI::Text {
     field $contents :param :reader;
 
     method length {
@@ -106,7 +106,7 @@ class Text {
         my $style;
         while (@items) {
             my $item = shift @items;
-            if (blessed $item && $item isa Style) {
+            if (blessed $item && $item isa Slight::Tools::TUI::Style) {
                 push @output => $item->apply;
                 $style //= $item;
             } else {
@@ -120,11 +120,11 @@ class Text {
     }
 
     sub with ($, @contents) {
-        Text->new( contents => \@contents )
+        Slight::Tools::TUI::Text->new( contents => \@contents )
     }
 }
 
-class TextArea {
+class Slight::Tools::TUI::TextArea {
     field $style    :param :reader;
     field $contents :param :reader;
     field $height   :param :reader;
@@ -167,24 +167,32 @@ class TextArea {
     }
 
     method render ($inline=true) {
-        my $nl = $inline ? $NEWLINE : ANSI::format_line_break($width);
+        my $nl = $inline ? $NEWLINE : Slight::Tools::TUI::ANSI::format_line_break($width);
         join $nl, map { join '' => $style->apply, $_, $style->clear } @$contents;
     }
 }
 
-class Screen {
+class Slight::Tools::TUI::Screen {
     field $height :reader;
     field $width  :reader;
 
     ADJUST {
-        ($width, $height) = ANSI::get_terminal_size;
+        ($width, $height) = Slight::Tools::TUI::ANSI::get_terminal_size;
     }
 
     method init {
+        $SIG{INT} = sub {
+            print
+                Slight::Tools::TUI::ANSI::show_cursor,
+                Slight::Tools::TUI::ANSI::disable_alt_buf;
+            die "Interuptted!";
+        };
+
         print
-            ANSI::enable_alt_buf,
-            ANSI::clear_screen,
-            ANSI::home_cursor;
+            Slight::Tools::TUI::ANSI::enable_alt_buf,
+            Slight::Tools::TUI::ANSI::clear_screen,
+            Slight::Tools::TUI::ANSI::home_cursor,
+            Slight::Tools::TUI::ANSI::hide_cursor;
     }
 
     method inline ($item) {
@@ -195,52 +203,17 @@ class Screen {
 
     method at ($pos, $item) {
         print join '' =>
-            ANSI::save_cursor,
-            ANSI::format_move_cursor(@$pos),
+            Slight::Tools::TUI::ANSI::save_cursor,
+            Slight::Tools::TUI::ANSI::format_move_cursor(@$pos),
             (blessed $item ? $item->render(false) : $item),
-            ANSI::restore_cursor;
+            Slight::Tools::TUI::ANSI::restore_cursor;
     }
 
     END {
-        ANSI::disable_alt_buf;
+        print
+            Slight::Tools::TUI::ANSI::show_cursor,
+            Slight::Tools::TUI::ANSI::disable_alt_buf;
     }
-}
-
-my $screen = Screen->new;
-
-$screen->init;
-
-$screen->inline(
-    Text->with(
-        Style->as(ITALIC),
-        Style->as(FG($PALETTE{raspberryPink})),   'R',
-        Style->as(FG($PALETTE{electricLime})),    'E',
-        Style->as(FG($PALETTE{babyBlueEyes})),    'P',
-        Style->as(FG($PALETTE{twilightLavender})),'L',
-    )
-);
-
-$screen->line_break;
-
-my @history;
-while (true) {
-    $screen->inline( Text->with( Style->as(FG($PALETTE{acidGreen})), '> ' ) );
-    my $input = <>;
-    chomp $input;
-    $screen->inline( Text->with( Style->as(FG($PALETTE{deepCerulean})), $input ) );
-    $screen->line_break;
-
-    push @history => $input;
-
-    $screen->at(
-        [ 2, 80 ],
-        TextArea->new(
-            style    => Style->as(BG($PALETTE{yellowGreen})),
-            contents => \@history,
-            height   => (scalar @history),
-            width    => 40,
-        )
-    );
 }
 
 ## -----------------------------------------------------------------------------
