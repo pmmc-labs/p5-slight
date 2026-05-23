@@ -5,8 +5,8 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
+use List::Util ();
 use Term::ReadKey qw[ GetTerminalSize ReadMode ];
-use Time::HiRes   qw[ time ];
 
 # Terminal setup
 
@@ -65,25 +65,129 @@ use constant NOT_INVERT    => 27;
 use constant NOT_HIDE      => 28;
 use constant NOT_STRIKE    => 29;
 
-sub clear_styles           { "\e[0m" }
-sub apply_styles (@styles) { sprintf "\e[%s;m" => join ';' => @styles }
+class Style {
+    field $styles :reader :param;
 
-sub hex2rgb ($hex) { +[ map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2)) ] }
+    method apply {
+        return '' unless @$styles;
+        return sprintf "\e[%s;m" => join ';' => @$styles;
+    }
 
+    method clear {
+        return '' unless @$styles;
+        return "\e[0m" ;
+    }
 
-say apply_styles(
-    FG( $PALETTE{goldenPoppy} ),
-    BG( $PALETTE{deepCerulean} ),
-    BOLD,
-);
-say " Hello World ";
-say apply_styles(UNDERLINE), " Goodbye All ";
-say apply_styles(NORMAL, NOT_UNDERLINE, ITALIC), "... hmm ";
-say clear_styles;
+    sub as ($, @styles) { Style->new( styles => \@styles ) }
+}
+
+class Text {
+    field $style    :param :reader;
+    field $contents :param :reader;
+
+    method render {
+        join '' => $style->apply, $contents, $style->clear;
+    }
+
+    sub with ($, $style, $contents) {
+        Text->new( style => $style, contents => $contents )
+    }
+}
+
+class TextLine {
+    field $contents :param :reader;
+
+    method render {
+        my @output;
+        my @items = @$contents;
+        my $style;
+        while (@items) {
+            my $item = shift @items;
+            if (blessed $item && $item isa Style) {
+                push @output => $item->apply;
+                $style //= $item;
+            } else {
+                push @output => $item;
+            }
+        }
+        if ($style) {
+            push @output => $style->clear;
+        }
+        return join '' => @output;
+    }
+
+    sub with ($, @contents) {
+        TextLine->new( contents => \@contents )
+    }
+}
+
+class TextBox {
+    field $style    :param :reader;
+    field $contents :param :reader;
+    field $height   :param :reader;
+    field $width    :param :reader;
+
+    field $clip    :param = true;
+    field $EMPTY   :param = ' ';
+    field $NEWLINE :param = "\n";
+
+    ADJUST {
+        $self->normalize;
+    }
+
+    method normalize {
+        my $h = scalar @$contents;
+
+        if ($height < $h && $clip) {
+            # height overflow
+            $contents->@* = $contents->@[ 0 .. ($height - 1) ];
+        }
+        elsif ($height > $h) {
+            # fill in ...
+            until ($h == $height) {
+                push @$contents => ($EMPTY x $width);
+                $h++;
+            }
+        }
+
+        foreach my ($i, $c) (indexed @$contents) {
+            my $w = length $c;
+            if ($width < $w && $clip) {
+                # width overflow
+                $contents->[$i] = substr($c, 0, ($width - 1));
+            }
+            elsif ($width > $w) {
+                # fill in ...
+                $contents->[$i] .= $EMPTY x ($width - $w);
+            }
+        }
+    }
+
+    method render {
+        join '' => $style->apply, (join $NEWLINE, @$contents), $style->clear;
+    }
+}
+
+say TextLine->with(
+    Style->as(FG($PALETTE{deepCerulean}), BOLD, UNDERLINE), 'Hello',
+    Style->as(BG($PALETTE{cardinalRed}), NOT_UNDERLINE), ' ',
+    Style->as(FG($PALETTE{ghostWhite}), ITALIC), 'World ',
+)->render;
+
+say TextBox->new(
+    style    => Style->as(BG($PALETTE{deepCerulean}), BOLD),
+    height   => 5,
+    width    => 10,
+    contents => +[qw[ hello world goodbye all ]],
+)->render;
 
 ## -----------------------------------------------------------------------------
 ## Static data below ...
 ## -----------------------------------------------------------------------------
+
+sub hex2rgb ($hex) {
+    +[ map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2)) ]
+}
 
 BEGIN {
     %PALETTE = (
