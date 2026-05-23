@@ -6,39 +6,51 @@ use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
 use List::Util ();
-use Term::ReadKey qw[ GetTerminalSize ReadMode ];
 
-# Terminal setup
 
-sub get_terminal_size { GetTerminalSize() }
+package ANSI {
+    use Term::ReadKey qw[ GetTerminalSize ReadMode ];
 
-sub clear_screen { "\e[2J" }
+    # Terminal setup
 
-sub hide_cursor  { "\e[?25l" }
-sub show_cursor  { "\e[?25h" }
+    use constant style_reset => "\e[0m";
 
-sub enable_alt_buf  { "\e[?1049h" }
-sub disable_alt_buf { "\e[?1049l" }
+    sub get_terminal_size { GetTerminalSize() }
 
-# Cursor
+    sub clear_screen { "\e[2J" }
 
-sub home_cursor  { "\e[H" }
+    sub hide_cursor  { "\e[?25l" }
+    sub show_cursor  { "\e[?25h" }
 
-sub format_move_cursor   (@to) { sprintf "\e[%d;%dH"  => @to    }
+    sub enable_alt_buf  { "\e[?1049h" }
+    sub disable_alt_buf { "\e[?1049l" }
 
-sub format_line_break ($width) { sprintf "\e[B\e[%dD" => $width }
+    # styles
+    sub format_styles (@styles) { sprintf "\e[%s;m" => join ';' => @styles }
 
-sub format_move_up    ($by) { sprintf "\e[%dA"  => $by }
-sub format_move_down  ($by) { sprintf "\e[%dB"  => $by }
-sub format_move_left  ($by) { sprintf "\e[%dD"  => $by }
-sub format_move_right ($by) { sprintf "\e[%dC"  => $by }
+    # Cursor
 
-# Input Read-Mode
+    sub home_cursor  { "\e[H" }
 
-sub restore_read_mode       ($fh=*STDIN) { ReadMode restore => $fh }
-sub set_read_mode_to_normal ($fh=*STDIN) { ReadMode normal  => $fh }
-sub set_read_mode_to_noecho ($fh=*STDIN) { ReadMode noecho  => $fh }
-sub set_read_mode_to_raw    ($fh=*STDIN) { ReadMode cbreak  => $fh }
+    sub save_cursor    { "\e[s" }
+    sub restore_cursor { "\e[u" }
+
+    sub format_move_cursor   (@to) { sprintf "\e[%d;%dH"  => @to    }
+
+    sub format_line_break ($width) { sprintf "\e[B\e[%dD" => $width }
+
+    sub format_move_up    ($by) { sprintf "\e[%dA"  => $by }
+    sub format_move_down  ($by) { sprintf "\e[%dB"  => $by }
+    sub format_move_left  ($by) { sprintf "\e[%dD"  => $by }
+    sub format_move_right ($by) { sprintf "\e[%dC"  => $by }
+
+    # Input Read-Mode
+
+    sub restore_read_mode       ($fh=*STDIN) { ReadMode restore => $fh }
+    sub set_read_mode_to_normal ($fh=*STDIN) { ReadMode normal  => $fh }
+    sub set_read_mode_to_noecho ($fh=*STDIN) { ReadMode noecho  => $fh }
+    sub set_read_mode_to_raw    ($fh=*STDIN) { ReadMode cbreak  => $fh }
+}
 
 # Style/Color utilities
 
@@ -70,12 +82,12 @@ class Style {
 
     method apply {
         return '' unless @$styles;
-        return sprintf "\e[%s;m" => join ';' => @$styles;
+        return ANSI::format_styles( @$styles );
     }
 
     method clear {
         return '' unless @$styles;
-        return "\e[0m" ;
+        return ANSI::style_reset;
     }
 
     sub as ($, @styles) { Style->new( styles => \@styles ) }
@@ -85,7 +97,7 @@ class Text {
     field $style    :param :reader;
     field $contents :param :reader;
 
-    method render {
+    method render ($) {
         join '' => $style->apply, $contents, $style->clear;
     }
 
@@ -97,7 +109,7 @@ class Text {
 class TextLine {
     field $contents :param :reader;
 
-    method render {
+    method render ($) {
         my @output;
         my @items = @$contents;
         my $style;
@@ -121,7 +133,7 @@ class TextLine {
     }
 }
 
-class TextBox {
+class TextArea {
     field $style    :param :reader;
     field $contents :param :reader;
     field $height   :param :reader;
@@ -163,8 +175,22 @@ class TextBox {
         }
     }
 
+    method render ($inline=true) {
+        my $nl = $inline ? $NEWLINE : ANSI::format_line_break($width);
+        join $nl, map { join '' => $style->apply, $_, $style->clear } @$contents;
+    }
+}
+
+class Positioned {
+    field $position :param :reader;
+    field $contents :param :reader;
+
     method render {
-        join '' => $style->apply, (join $NEWLINE, @$contents), $style->clear;
+        join '' =>
+            ANSI::save_cursor,
+            ANSI::format_move_cursor(@$position),
+            $contents->render(false),
+            ANSI::restore_cursor;
     }
 }
 
@@ -174,11 +200,20 @@ say TextLine->with(
     Style->as(FG($PALETTE{ghostWhite}), ITALIC), 'World ',
 )->render;
 
-say TextBox->new(
-    style    => Style->as(BG($PALETTE{deepCerulean}), BOLD),
-    height   => 5,
-    width    => 10,
-    contents => +[qw[ hello world goodbye all ]],
+print Positioned->new(
+    position => [ 2, 80 ],
+    contents =>
+    TextArea->new(
+        style    => Style->as(BG($PALETTE{deepCerulean}), BOLD),
+        height   => 5,
+        width    => 10,
+        contents => +[qw[ hello world goodbye all ]],
+    )
+)->render();
+
+say TextLine->with(
+    Style->as(FG($PALETTE{heliotropePurple}), BOLD), 'Goodbye ',
+    Style->as(FG($PALETTE{flaxFlowerBlue}), ITALIC), 'World ',
 )->render;
 
 ## -----------------------------------------------------------------------------
