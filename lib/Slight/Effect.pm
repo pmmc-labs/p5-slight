@@ -14,7 +14,7 @@ class Slight::Effect {
     use overload '""' => 'to_string';
     method handler  ($ctx, $a, $e, @a) { ... }
     method provides { +{} }
-    method to_string { sprintf '*{%s}' => __CLASS__ }
+    method to_string { sprintf '*{%s}' => (split /\:\:/ => __CLASS__)[-1]  }
 }
 
 class Slight::Effect::SIGNAL :isa(Slight::Effect) {

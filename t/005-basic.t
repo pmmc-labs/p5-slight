@@ -14,6 +14,7 @@ my %PALETTE = %Slight::Tools::TUI::PALETTE;
 BEGIN {
     *ITALIC = \&Slight::Tools::TUI::ITALIC;
     *BOLD   = \&Slight::Tools::TUI::BOLD;
+    *UNDERLINE = \&Slight::Tools::TUI::UNDERLINE;
     *FG = \&Slight::Tools::TUI::FG;
     *BG = \&Slight::Tools::TUI::BG;
 }
@@ -29,6 +30,14 @@ $screen->inline(
         Slight::Tools::TUI::Style->as(FG($PALETTE{electricLime})),    'E',
         Slight::Tools::TUI::Style->as(FG($PALETTE{babyBlueEyes})),    'P',
         Slight::Tools::TUI::Style->as(FG($PALETTE{twilightLavender})),'L',
+    )
+);
+
+$screen->at(
+    [ 1, $screen->width - 40 ],
+    Slight::Tools::TUI::Text->with(
+        Slight::Tools::TUI::Style->as(BG($PALETTE{airSuperiorityBlue}), BOLD, UNDERLINE),
+        sprintf '%-40s' => ' HISTORY:'
     )
 );
 
@@ -77,11 +86,11 @@ while (true) {
     my @history = $c->history->@*;
     $screen->line_break;
     $screen->at(
-        [ 1, $screen->width - 40 ],
+        [ 2, $screen->width - 40 ],
         Slight::Tools::TUI::TextArea->new(
             style    => Slight::Tools::TUI::Style->as(BG($PALETTE{airSuperiorityBlue})),
-            contents => +[ 'HISTORY:', @history ],
-            height   => 1 + (scalar @history),
+            contents => +[ map { sprintf ' %s' => $_ } @history ],
+            height   => (scalar @history),
             width    => 40,
         )
     );

@@ -14,10 +14,10 @@ class Slight::Machine {
     field $context :param :reader;
     field $alloc   :param :reader;
 
-    field $tick = 0;
-    field @queue;
+    field $tick  :reader = 0;
+    field @queue :reader;
 
-    field %watchers;
+    field $watchers :reader = +{};
 
     ## ------------------------------------------
     ## Continuations
@@ -72,12 +72,13 @@ class Slight::Machine {
     ## Monitoring
     ## ------------------------------------------
 
-    method watch ($event, $f) { push @{ $watchers{$event} //= +[] } => $f }
+    method scope_depth { scalar grep { $_->[0] eq LEAVE_SCOPE } @queue }
+
+    method watch ($event, $f) { push @{ $watchers->{$event} //= +[] } => $f }
 
     method trigger ($event, @args) {
-        return unless exists $watchers{$event};
-        $_->($context, (scalar grep { $_->[0] eq LEAVE_SCOPE } @queue), $tick, @args)
-            foreach $watchers{$event}->@*;
+        return unless exists $watchers->{$event};
+        $_->( $context, $event, @args ) foreach $watchers->{$event}->@*;
     }
 
     ## ------------------------------------------
@@ -153,10 +154,12 @@ class Slight::Machine {
                     thread_computation(\@queue, $env);
                 }
                 when (ENTER_SCOPE) {
+                    $self->trigger( enter_scope => $env );
                     # TODO - add `defer` support
                     #... but do nothing for now
                 }
                 when (LEAVE_SCOPE) {
+                    $self->trigger( leave_scope => $env );
                     # ... pass the stack, and the
                     # restore the upper/older env
                     # TODO - handle `defer`s
@@ -180,12 +183,6 @@ class Slight::Machine {
                 }
                 default {
                     push @queue => $self->step( $next );
-                }
-            }
-
-            if (Slight::DEBUG_QUEUE) {
-                foreach my $k (@queue) {
-                    say join ', ' => @$k;
                 }
             }
         }
@@ -218,7 +215,7 @@ class Slight::Machine {
                 if ($call->is_applicative) {
                     return ApplyCall( $env, $call ), EvalArgs( $env, $args );
                 } else {
-                    my @args = ($env);
+                    my @args;
                     until ($args->is_nil) {
                         push @args => $args->head;
                         $args = $args->tail;
@@ -231,7 +228,7 @@ class Slight::Machine {
                 given (blessed $call) {
                     when ('Slight::Term::Procedure') {
                         if ($call->is_operative) {
-                            return $call->body->( @args );
+                            return $call->body->( $env, @args );
                         } else {
                             return Just( $env, $call->body->( @args ) );
                         }
@@ -240,6 +237,9 @@ class Slight::Machine {
                         my %local;
                         if (defined $call->name) {
                             $local{ $call->name->raw } = $call;
+                        }
+                        if ($call isa Slight::Term::FExpr) {
+                            unshift @args => $env;
                         }
                         my $params = $call->params;
                         until ($params->is_nil) {

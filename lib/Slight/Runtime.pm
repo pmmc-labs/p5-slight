@@ -126,6 +126,9 @@ class Slight::Runtime {
             root_env => $env,
         );
 
+        $ctx->machine->watchers->%* = $parent->machine->watchers->%*;
+
+
         if (Slight::DEBUG) {
             Slight::DEBUG_STEP && $ctx->machine->watch(step => \&Slight::Tools::Debug::debug_step);
             Slight::DEBUG_BIND && $ctx->machine->watch(bind => \&Slight::Tools::Debug::debug_bind);

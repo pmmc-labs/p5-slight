@@ -25,28 +25,12 @@ sub opcode2rgb ($op) {
     return hex2rgb("FFCC00") if $op eq Slight::Machine::LEAVE_SCOPE;
 }
 
-sub debug_queue ($ctx, $tick, @queue) {
-    say '─' x 120;
-    say "QUEUE ╭",('─' x 113),"\n      ├─",
-        (join "\n      ├─" =>
-         map {
-            my ($op, $env, @rest) = $_->@*;
-            sprintf "\e[38;2;%s;m %-11s \e[38;2;%s;m %6s \e[0m %s" =>
-                (join ';' => opcode2rgb($op)),
-                $op,
-                (join ';' => hex2rgb($env->hash)),
-                substr($env->hash, 0, 6),
-                join ', ' => @rest;
-
-        }
-        @queue),
-        "\n      ╰",('─' x 113);
-    say '─' x 120;
-}
-
-sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
+sub debug_step ($ctx, $event, $op, $env, @stack) {
     state $cap_it = false;
     state $PREFIX = "\e[38;2;75;75;75;m.... ║\e[38;2;125;125;125;m ..... ║\e[0m ";
+
+    my $depth = $ctx->machine->scope_depth;
+    my $tick  = $ctx->machine->tick;
 
     if ($tick == 1 || $cap_it) {
         say sprintf "${PREFIX}%s╭─────────────┬────────╮",
@@ -77,7 +61,10 @@ sub debug_step ($ctx, $depth, $tick, $op, $env, @stack) {
     }
 }
 
-sub debug_bind ($ctx, $depth, $tick, $name, $env, $local, %local) {
+sub debug_bind ($ctx, $event, $name, $env, $local, %local) {
+    my $depth = $ctx->machine->scope_depth;
+    my $tick  = $ctx->machine->tick;
+
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ BIND *%s" => (join ';' => 120), $tick, $name->to_string;
@@ -93,7 +80,10 @@ sub debug_bind ($ctx, $depth, $tick, $name, $env, $local, %local) {
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╮" => (join ';' => 120), $tick, ('─' x 22);
 }
 
-sub debug_call ($ctx, $depth, $tick, $call, $env, $local, %local) {
+sub debug_call ($ctx, $event, $call, $env, $local, %local) {
+    my $depth = $ctx->machine->scope_depth;
+    my $tick  = $ctx->machine->tick;
+
     my $indent = ($depth ? ('  ' x $depth) : '');
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m├%s╯" => (join ';' => 120), $tick, ('─' x 22);
     say sprintf "${indent}\e[38;2;%s;m%05d \e[0m│ APPLY &%s" => (join ';' => 120), $tick, ($call->name // '__ANON__');

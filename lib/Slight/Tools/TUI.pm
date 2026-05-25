@@ -208,12 +208,6 @@ class Slight::Tools::TUI::Screen {
             (blessed $item ? $item->render(false) : $item),
             Slight::Tools::TUI::ANSI::restore_cursor;
     }
-
-    END {
-        print
-            Slight::Tools::TUI::ANSI::show_cursor,
-            Slight::Tools::TUI::ANSI::disable_alt_buf;
-    }
 }
 
 ## -----------------------------------------------------------------------------
