@@ -12,25 +12,17 @@ use Slight::Tools::TUI;
 my $r   = Slight::Runtime->new->init;
 my $ctx = $r->spawn_context(q[
 
-    (defun adder (x y) (do
-        (say (~
-                (~ "adder@" (getpid))
-                (~ " with"
-                    (~
-                        (~ " X: " x)
-                        (~ " Y: " y)))))
-        (+ x y)))
+    (defun fact (n)
+        (if (== n 0) 1
+            (yield (* n (fact (- n 1))))))
 
+    (defun fib (n)
+        (if (< n 2) n
+            (+ (yield (fib (- n 2)))
+               (yield (fib (- n 1))))))
 
-    (let pid1 (fork (adder 10   20)))
-    (let pid2 (fork (adder 100  200)))
-    (let pid3 (fork (adder 1000 2000)))
-
-    (waitpid pid2)
-    (say "PID2 exited!")
-
-    (waitpid pid3)
-    (say (~ "Exiting " (getpid)))
+    (let pid1 (fork (fib 4)))
+    (let pid2 (fork (fact 4)))
 
 ]);
 
@@ -73,18 +65,25 @@ $SIG{INT} = sub {
     die "Interuptted!";
 };
 
-print
-    Slight::Tools::TUI::ANSI::enable_alt_buf,
-    Slight::Tools::TUI::ANSI::clear_screen,
-    Slight::Tools::TUI::ANSI::home_cursor,
-    Slight::Tools::TUI::ANSI::hide_cursor;
+print Slight::Tools::TUI::ANSI::enable_alt_buf;
+print Slight::Tools::TUI::ANSI::hide_cursor;
 
 $ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
     print
         Slight::Tools::TUI::ANSI::clear_screen,
         Slight::Tools::TUI::ANSI::home_cursor
         ;
-    say sprintf 'pid: %02d tick: %s' => $ctx->PID->raw, $ctx->machine->tick;
+
+    say         '───────────╮';
+    say sprintf ' PROCESSES │ %s', join ' ╎ ' => map {
+        sprintf '%s %s(%03d)' =>
+            (refaddr $_ == refaddr $ctx
+                ? '▲'
+                : $_->is_halted ? '●' : '▼'),
+            $_->PID,
+            $_->machine->tick
+    } $ctx->runtime->spawned;
+    say         '───────────┴', ('─' x 140);
     if (my @queue = $ctx->machine->queue) {
         say "  - ", join "\n  - " => map {
             my ($_op, $_env, @_stack) = @$_;
@@ -106,7 +105,7 @@ $ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
     if ($ENV{DEBUG}) {
         my $x = <>;
     } else {
-        sleep(0.1);
+        sleep($ENV{CLOCK} // 0.03);
     }
 });
 
@@ -114,7 +113,6 @@ my @ctxs = $r->run;
 
 say $_->result foreach @ctxs;
 
-print
-    Slight::Tools::TUI::ANSI::show_cursor,
-    Slight::Tools::TUI::ANSI::disable_alt_buf;
+print Slight::Tools::TUI::ANSI::show_cursor;
+print Slight::Tools::TUI::ANSI::disable_alt_buf if <>;
 

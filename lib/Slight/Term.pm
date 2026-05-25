@@ -31,7 +31,7 @@ class Slight::Term {
 class Slight::Term::PID :isa(Slight::Term) {
     field $raw :param :reader;
 
-    method to_string { sprintf '%s<%d>' => __CLASS__, $raw }
+    method to_string { sprintf 'PID<%d>' => $raw }
 }
 
 ## ------------------------------------

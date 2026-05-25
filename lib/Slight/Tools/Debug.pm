@@ -25,6 +25,7 @@ sub opcode2rgb ($op) {
     return hex2rgb("FFCC00") if $op eq Slight::Machine::LEAVE_SCOPE;
 }
 
+
 sub debug_step ($ctx, $event, $op, $env, @stack) {
     state $cap_it = false;
     state $PREFIX = "\e[38;2;75;75;75;m.... ║\e[38;2;125;125;125;m ..... ║\e[0m ";

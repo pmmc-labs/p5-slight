@@ -86,6 +86,10 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
                 $ctx->runtime->watch( $pid, $ctx );
                 return Slight::Machine::Drop( $env );
             }
+            when ('yield') {
+                my ($arg) = @args;
+                return Slight::Machine::EvalExpr( $env, $arg );
+            }
         }
     }
 
@@ -100,10 +104,15 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
                    Slight::Machine::EvalExpr($E, $pid);
         }
 
+        my sub _yield ($E, $arg)  {
+            return Slight::Machine::Host($E, $self, $alloc->Sym('yield'), $arg);
+        }
+
         return +{
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid'),  \&_getpid,  is_operative => true ),
             'fork'    => $alloc->Procedure( $alloc->Sym('fork'),    \&_fork,    is_operative => true ),
             'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
+            'yield'   => $alloc->Procedure( $alloc->Sym('yield'),   \&_yield,   is_operative => true ),
         }
     }
 }

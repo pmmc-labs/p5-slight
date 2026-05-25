@@ -72,9 +72,9 @@ class Slight::Runtime {
     field @environment;
     field @effects;
 
-    field @running;
-    field @waiting;
-    field @halted;
+    field @spawned :reader;
+    field @running :reader;
+    field @halted  :reader;
 
     field %watchers;
 
@@ -114,6 +114,7 @@ class Slight::Runtime {
         $ctx->compile;
 
         push @running => $ctx;
+        push @spawned => $ctx;
         return $ctx;
     }
 
@@ -138,6 +139,7 @@ class Slight::Runtime {
         $ctx->compile;
 
         push @running => $ctx;
+        push @spawned => $ctx;
         return $ctx;
     }
 
