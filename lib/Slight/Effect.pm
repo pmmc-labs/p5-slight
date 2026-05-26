@@ -66,7 +66,10 @@ class Slight::Effect::SIGNAL :isa(Slight::Effect) {
 }
 
 class Slight::Effect::SYSTEM :isa(Slight::Effect) {
-    field $alloc  :param :reader;
+    field $alloc :param :reader;
+
+    field %mailboxes;
+    field %waiting;
 
     method handler  ($ctx, $action, $env, @args) {
         given ($action->raw) {
@@ -82,9 +85,38 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
             when ('waitpid') {
                 my ($pid) = @args;
                 # TODO ... something here
+                say "GOT WAITPID, ... SUSPENDING $ctx";
                 $ctx->suspend;
                 $ctx->runtime->watch( $pid, $ctx );
                 return Slight::Machine::Drop( $env );
+            }
+            when ('recv') {
+                $ctx->suspend;
+                say "GOT RECV, ... SUSPENDING $ctx";
+                $waiting{ $ctx->PID->to_string } = [ $env, $ctx ];
+                return ();
+            }
+            when ('send') {
+                my ($pid, $msg) = @args;
+                if (my $reciever = $waiting{ $pid->to_string }) {
+                    my ($e, $c) = @$reciever;
+                    if ($c->is_waiting) {
+                        say "GOT SEND FOR WAITING $c";
+                        $c->resume;
+                        $c->machine->kontinue( Slight::Machine::Just( $e, $msg ) );
+                        return Slight::Machine::Just( $env, $alloc->Nil );
+                    } else {
+                        say join ', ' => map {
+                            my ($_e, $_c) = $waiting{$_}->@*;
+                            "$_e -> $_c"
+                        } keys %waiting;
+                        say "RECEIVER $c IS WAITING but not waiting???"
+                    }
+                }
+                else {
+                    die "RECEIVER $pid IS NOT WAITING???"
+                }
+                return ();
             }
             when ('yield') {
                 my ($arg) = @args;
@@ -94,8 +126,6 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
     }
 
     method provides {
-        # TODO:
-        # - the PID should be a term that can be int/str when needed
 
         my sub _getpid  ($E, @)     { return Slight::Machine::Host($E, $self, $alloc->Sym('getpid')) }
         my sub _fork    ($E, $expr) { return Slight::Machine::Host($E, $self, $alloc->Sym('fork'), $expr) }
@@ -108,11 +138,22 @@ class Slight::Effect::SYSTEM :isa(Slight::Effect) {
             return Slight::Machine::Host($E, $self, $alloc->Sym('yield'), $arg);
         }
 
+        my sub _recv ($E)  {
+            return Slight::Machine::Host($E, $self, $alloc->Sym('recv'));
+        }
+
+        my sub _send ($E, $pid, $msg)  {
+            return Slight::Machine::Host($E, $self, $alloc->Sym('send')),
+                   Slight::Machine::EvalArgs($E, $alloc->List($pid, $msg) );
+        }
+
         return +{
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid'),  \&_getpid,  is_operative => true ),
             'fork'    => $alloc->Procedure( $alloc->Sym('fork'),    \&_fork,    is_operative => true ),
             'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
             'yield'   => $alloc->Procedure( $alloc->Sym('yield'),   \&_yield,   is_operative => true ),
+            'recv'    => $alloc->Procedure( $alloc->Sym('recv'),    \&_recv,    is_operative => true ),
+            'send'    => $alloc->Procedure( $alloc->Sym('send'),    \&_send,    is_operative => true ),
         }
     }
 }

@@ -127,8 +127,7 @@ class Slight::Runtime {
             root_env => $env,
         );
 
-        $ctx->machine->watchers->%* = $parent->machine->watchers->%*;
-
+        #$ctx->machine->watchers->%* = $parent->machine->watchers->%*;
 
         if (Slight::DEBUG) {
             Slight::DEBUG_STEP && $ctx->machine->watch(step => \&Slight::Tools::Debug::debug_step);
@@ -152,23 +151,26 @@ class Slight::Runtime {
     method run {
         while (@running) {
             my $ctx  = shift @running;
-            my $host = $ctx->run_until_host;
-            my ($HOST, $env, $effect, $action, @args) = @$host;
-            my @next = $effect->handler( $ctx, $action, $env, @args );
-            $ctx->kontinue( @next ) if @next;
-            if ($ctx->is_halted) {
-                if (my $ws = $watchers{ $ctx->PID->hash }) {
-                    #say "RESUMING!!!!!!!!!!!!!";
-                    unshift @running => map { $_->resume; $_ } reverse @$ws;
+            if ($ctx->machine->is_running) {
+                my $host = $ctx->run_until_host;
+                my ($HOST, $env, $effect, $action, @args) = @$host;
+                my @next = $effect->handler( $ctx, $action, $env, @args );
+                $ctx->kontinue( @next ) if @next;
+                if ($ctx->is_halted) {
+                    if (my $ws = $watchers{ $ctx->PID->hash }) {
+                        #say "RESUMING!!!!!!!!!!!!!";
+                        unshift @running => map { $_->resume; $_ } reverse @$ws;
+                    }
+                    push @halted => $ctx;
                 }
-                push @halted => $ctx;
-            }
-            elsif ($ctx->is_waiting) {
-                # do nothing atm
-                #say "WAITING!!!!!!!!!!!!!";
-            }
-            else {
-                push @running => $ctx;
+                elsif ($ctx->is_waiting) {
+                    # do nothing atm
+                    #say "WAITING!!!!!!!!!!!!!";
+                    push @running => $ctx;
+                }
+                else {
+                    push @running => $ctx;
+                }
             }
         }
         return @halted;

@@ -23,6 +23,9 @@ class Slight::Allocator {
         $False = Slight::Term::Bool->new( raw => false, hash => Slight::Term::Bool->hash_of('false') );
     }
 
+    method contains ($hash) { exists $terms{ $hash } }
+    method lookup   ($hash) { return $terms{ $hash } }
+
     method Nil   { $Nil }
     method True  { $True }
     method False { $False }

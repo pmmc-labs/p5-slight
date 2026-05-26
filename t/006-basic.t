@@ -12,19 +12,41 @@ use Slight::Tools::TUI;
 my $r   = Slight::Runtime->new->init;
 my $ctx = $r->spawn_context(q[
 
+(defun greeter (prefix)
+    (do
+        (let name (recv))
+        (say (~ prefix name))
+        (yield (greeter prefix))))
+
+(let g (fork (greeter "Hello ")))
+
+(send g "World")
+(send g "EVeryone")
+
+(waitpid g)
+
+
+]);
+
+=pod
+
     (defun fact (n)
-        (if (== n 0) 1
+        (if (== n 0)
+            (yield 1)
             (yield (* n (fact (- n 1))))))
 
     (defun fib (n)
-        (if (< n 2) n
+        (if (< n 2)
+            (yield n)
             (+ (yield (fib (- n 2)))
                (yield (fib (- n 1))))))
 
-    (let pid1 (fork (fib 4)))
-    (let pid2 (fork (fact 4)))
+    (let pid1 (fork (yield (fib 4))))
+    (let pid2 (fork (yield (fact 4))))
 
-]);
+    (waitpid pid2)
+
+=cut
 
 my sub hex2rgb ($hex) {
     map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2))
@@ -42,8 +64,8 @@ my sub opcode2rgb ($op) {
     return hex2rgb("1C39BB") if $op eq Slight::Machine::EVAL_ARGS;
     return hex2rgb("8E3A59") if $op eq Slight::Machine::APPLY_EXPR;
     return hex2rgb("E25098") if $op eq Slight::Machine::APPLY_CALL;
-    return hex2rgb("0F52BA") if $op eq Slight::Machine::ENTER_SCOPE;
-    return hex2rgb("FFCC00") if $op eq Slight::Machine::LEAVE_SCOPE;
+    return hex2rgb("FFCC00") if $op eq Slight::Machine::ENTER_SCOPE;
+    return hex2rgb("FCC2CC") if $op eq Slight::Machine::LEAVE_SCOPE;
 }
 
 my sub abbrev_env ($e) {
@@ -58,61 +80,65 @@ my sub abbrev_env ($e) {
     )
 }
 
-$SIG{INT} = sub {
-    print
-        Slight::Tools::TUI::ANSI::show_cursor,
-        Slight::Tools::TUI::ANSI::disable_alt_buf;
-    die "Interuptted!";
-};
-
-print Slight::Tools::TUI::ANSI::enable_alt_buf;
-print Slight::Tools::TUI::ANSI::hide_cursor;
-
-$ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
-    print
-        Slight::Tools::TUI::ANSI::clear_screen,
-        Slight::Tools::TUI::ANSI::home_cursor
-        ;
-
-    say         '───────────╮';
-    say sprintf ' PROCESSES │ %s', join ' ╎ ' => map {
-        sprintf '%s %s(%03d)' =>
-            (refaddr $_ == refaddr $ctx
-                ? '▲'
-                : $_->is_halted ? '●' : '▼'),
-            $_->PID,
-            $_->machine->tick
-    } $ctx->runtime->spawned;
-    say         '───────────┴', ('─' x 140);
-    if (my @queue = $ctx->machine->queue) {
-        say "  - ", join "\n  - " => map {
-            my ($_op, $_env, @_stack) = @$_;
-            sprintf "\e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
-                opcode2rgb($_op),
-                $_op,
-                (join ', ' => map $_->to_string, @_stack),
-                hex2rgb(substr($_env->hash, 0, 6)),
-                abbrev_env($_env), ;
-        } @queue;
-    }
-    say sprintf " -> \e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
-        opcode2rgb($op),
-        $op,
-        (join ', ' => map $_->to_string, @stack),
-        hex2rgb(substr($env->hash, 0, 6)),
-        abbrev_env($env);
-
-    if ($ENV{DEBUG}) {
-        my $x = <>;
-    } else {
-        sleep($ENV{CLOCK} // 0.03);
-    }
-});
+#$SIG{INT} = sub {
+#    print
+#        Slight::Tools::TUI::ANSI::show_cursor,
+#        Slight::Tools::TUI::ANSI::disable_alt_buf;
+#    die "Interuptted!";
+#};
+#
+#print Slight::Tools::TUI::ANSI::enable_alt_buf;
+#print Slight::Tools::TUI::ANSI::hide_cursor;
+#
+#$ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
+#    print
+#        Slight::Tools::TUI::ANSI::clear_screen,
+#        Slight::Tools::TUI::ANSI::home_cursor
+#        ;
+#
+#    say         '───────────╮';
+#    say sprintf ' PROCESSES │ %s', join ' ╎ ' => map {
+#        sprintf '%s %s(%03d)' =>
+#            (refaddr $_ == refaddr $ctx
+#                ? '▲'
+#                : $_->is_halted
+#                ? '●'
+#                : $_->is_waiting
+#                ? '◌'
+#                : '▼'),
+#            $_->PID,
+#            $_->machine->tick
+#    } $ctx->runtime->spawned;
+#    say         '───────────┴', ('─' x 140);
+#    say sprintf " -> \e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
+#        opcode2rgb($op),
+#        $op,
+#        (join ', ' => map $_->to_string, @stack),
+#        hex2rgb(substr($env->hash, 0, 6)),
+#        abbrev_env($env);
+#    if (my @queue = $ctx->machine->queue) {
+#        say "  - ", join "\n  - " => map {
+#            my ($_op, $_env, @_stack) = @$_;
+#            sprintf "\e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
+#                opcode2rgb($_op),
+#                $_op,
+#                (join ', ' => map $_->to_string, @_stack),
+#                hex2rgb(substr($_env->hash, 0, 6)),
+#                abbrev_env($_env), ;
+#        } reverse @queue;
+#    }
+#
+#    if ($ENV{D}) {
+#        my $x = <>;
+#    } else {
+#        sleep($ENV{C} // 0.03);
+#    }
+#});
 
 my @ctxs = $r->run;
 
 say $_->result foreach @ctxs;
 
-print Slight::Tools::TUI::ANSI::show_cursor;
-print Slight::Tools::TUI::ANSI::disable_alt_buf if <>;
+#print Slight::Tools::TUI::ANSI::show_cursor;
+#print Slight::Tools::TUI::ANSI::disable_alt_buf if <>;
 

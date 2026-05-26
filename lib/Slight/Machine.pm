@@ -185,6 +185,10 @@ class Slight::Machine {
                     push @queue => $self->step( $next );
                 }
             }
+
+            if (Slight::DEBUG_QUEUE) {
+                say join "\n" => map { join ', ' => @$_ } @queue;
+            }
         }
     }
 

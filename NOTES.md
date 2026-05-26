@@ -1,6 +1,16 @@
 
 
+(defun greeter (prefix)
+    (do 
+        (let name (recv))
+        (say (~ prefix name))
+        (yield (greeter prefix)))
 
+
+(let g (fork (greeter "Hello ")))
+
+(send g "World!")
+(send g "Everyone!")
 
 ┌─────┬─────┬─────┬─────┬─────┬─────┐
 │░▓░░▓│░░░░░│░░░░░│░░░░░│░░░░░│░░░░░│
