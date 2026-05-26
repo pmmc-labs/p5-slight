@@ -62,65 +62,65 @@ my sub abbrev_env ($e) {
     )
 }
 
-#$SIG{INT} = sub {
-#    print
-#        Slight::Tools::TUI::ANSI::show_cursor,
-#        Slight::Tools::TUI::ANSI::disable_alt_buf;
-#    die "Interuptted!";
-#};
-#
-#print Slight::Tools::TUI::ANSI::enable_alt_buf;
-#print Slight::Tools::TUI::ANSI::hide_cursor;
-#
-#$ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
-#    print
-#        Slight::Tools::TUI::ANSI::clear_screen,
-#        Slight::Tools::TUI::ANSI::home_cursor
-#        ;
-#
-#    say         '───────────╮';
-#    say sprintf ' PROCESSES │ %s', join ' ╎ ' => map {
-#        sprintf '%s %s(%03d)' =>
-#            (refaddr $_ == refaddr $ctx
-#                ? '▲'
-#                : $_->is_halted
-#                ? '●'
-#                : $_->is_waiting
-#                ? '◌'
-#                : '▼'),
-#            $_->PID,
-#            $_->machine->tick
-#    } $ctx->runtime->spawned;
-#    say         '───────────┴', ('─' x 140);
-#    say sprintf " -> \e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
-#        opcode2rgb($op),
-#        $op,
-#        (join ', ' => map $_->to_string, @stack),
-#        hex2rgb(substr($env->hash, 0, 6)),
-#        abbrev_env($env);
-#    if (my @queue = $ctx->machine->queue) {
-#        say "  - ", join "\n  - " => map {
-#            my ($_op, $_env, @_stack) = @$_;
-#            sprintf "\e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
-#                opcode2rgb($_op),
-#                $_op,
-#                (join ', ' => map $_->to_string, @_stack),
-#                hex2rgb(substr($_env->hash, 0, 6)),
-#                abbrev_env($_env), ;
-#        } reverse @queue;
-#    }
-#
-#    if ($ENV{D}) {
-#        my $x = <>;
-#    } else {
-#        sleep($ENV{C} // 0.03);
-#    }
-#});
+$SIG{INT} = sub {
+    print
+        Slight::Tools::TUI::ANSI::show_cursor,
+        Slight::Tools::TUI::ANSI::disable_alt_buf;
+    die "Interuptted!";
+};
+
+print Slight::Tools::TUI::ANSI::enable_alt_buf;
+print Slight::Tools::TUI::ANSI::hide_cursor;
+
+$ctx->machine->watch(step => sub ($ctx, $event, $op, $env, @stack) {
+    print
+        Slight::Tools::TUI::ANSI::clear_screen,
+        Slight::Tools::TUI::ANSI::home_cursor
+        ;
+
+    say         '───────────╮';
+    say sprintf ' PROCESSES │ %s', join ' ╎ ' => map {
+        sprintf '%s %s(%03d)' =>
+            (refaddr $_ == refaddr $ctx
+                ? '▲'
+                : $_->is_halted
+                ? '●'
+                : $_->is_waiting
+                ? '◌'
+                : '▼'),
+            $_->PID,
+            $_->machine->tick
+    } $ctx->runtime->spawned;
+    say         '───────────┴', ('─' x 140);
+    say sprintf " -> \e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
+        opcode2rgb($op),
+        $op,
+        (join ', ' => map $_->to_string, @stack),
+        hex2rgb(substr($env->hash, 0, 6)),
+        abbrev_env($env);
+    if (my @queue = $ctx->machine->queue) {
+        say "  - ", join "\n  - " => map {
+            my ($_op, $_env, @_stack) = @$_;
+            sprintf "\e[48;2;%d;%d;%d;m %-12s\e[0m %-100s \e[38;2;%d;%d;%d;m%-38s\e[0m" =>
+                opcode2rgb($_op),
+                $_op,
+                (join ', ' => map $_->to_string, @_stack),
+                hex2rgb(substr($_env->hash, 0, 6)),
+                abbrev_env($_env), ;
+        } reverse @queue;
+    }
+
+    if ($ENV{D}) {
+        my $x = <>;
+    } else {
+        sleep($ENV{C} // 0.03);
+    }
+});
 
 my @ctxs = $r->run;
 
 say $_->result foreach @ctxs;
 
-#print Slight::Tools::TUI::ANSI::show_cursor;
-#print Slight::Tools::TUI::ANSI::disable_alt_buf if <>;
+print Slight::Tools::TUI::ANSI::show_cursor;
+print Slight::Tools::TUI::ANSI::disable_alt_buf if <>;
 

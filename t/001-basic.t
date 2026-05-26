@@ -7,28 +7,14 @@ use experimental qw[ class switch ];
 use Slight;
 
 my $r   = Slight::Runtime->new->init;
-my $fact = $r->spawn_context(q[
+my $ctx = $r->spawn_context(q[
 
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(fact 6)
+(say "Hello World")
 
 ]);
 
-my $fib = $r->spawn_context(q[
+my @done = $r->run;
 
-(defun fib (n)
-        (if (< n 2) n
-            (+ (fib (- n 2))
-               (fib (- n 1)))))
-
-(fib 6)
-
-]);
-
-my @ctxs = $r->run;
-
-say $_->result foreach @ctxs;
+say 'DONE:';
+say sprintf '%s => %s' => $_->PID, $_->result // $_->error foreach @done;
 

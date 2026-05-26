@@ -80,10 +80,9 @@ my $has_name   = $alloc->Sym('has:=name');
 my $has_age    = $alloc->Sym('has:=age');
 my $has_parent = $alloc->Sym('has:=parent');
 my $has_child  = $alloc->Sym('has:=child');
-my $child_of   = $alloc->Sym('child->of');
-my $parent_of  = $alloc->Sym('parent->of');
 
 my @facts = (
+    # data
     declare( $dirk, $has_name, $alloc->Str("Dirk Smith") ),
     declare( $dirk, $has_age,  $alloc->Num(46) ),
 
@@ -96,20 +95,15 @@ my @facts = (
     declare( $cathy, $has_name, $alloc->Str("Cathy Jones") ),
     declare( $cathy, $has_age,  $alloc->Num(23) ),
 
+    # relations
     declare( $dirk,  $has_child,  $cathy ),
-        declare( $cathy, $child_of, $dirk ),   # which implies ...
-        declare( $cathy, $has_parent, $dirk ), # which means ....
-            declare( $dirk,  $parent_of, $cathy ), # which implies ...
+    declare( $cathy, $has_parent, $dirk  ),
 
     declare( $alice, $has_child,  $cathy ),
-        declare( $cathy, $child_of, $alice ),
-        declare( $cathy, $has_parent, $alice ),
-            declare( $alice, $parent_of, $cathy ),
+    declare( $cathy, $has_parent, $alice ),
 
+    declare( $cathy, $has_child,  $bob   ),
     declare( $bob,   $has_parent, $cathy ),
-        declare( $cathy, $parent_of, $bob   ),
-        declare( $cathy, $has_child,  $bob ),
-            declare( $bob,   $child_of, $cathy ),
 );
 
 dump_index(\%index);
