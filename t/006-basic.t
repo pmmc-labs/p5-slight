@@ -12,24 +12,6 @@ use Slight::Tools::TUI;
 my $r   = Slight::Runtime->new->init;
 my $ctx = $r->spawn_context(q[
 
-(defun greeter (prefix)
-    (do
-        (let name (recv))
-        (say (~ prefix name))
-        (yield (greeter prefix))))
-
-(let g (fork (greeter "Hello ")))
-
-(send g "World")
-(send g "EVeryone")
-
-(waitpid g)
-
-
-]);
-
-=pod
-
     (defun fact (n)
         (if (== n 0)
             (yield 1)
@@ -46,7 +28,7 @@ my $ctx = $r->spawn_context(q[
 
     (waitpid pid2)
 
-=cut
+]);
 
 my sub hex2rgb ($hex) {
     map hex, (substr($hex, 0, 2), substr($hex, 2, 2), substr($hex, 4, 2))
