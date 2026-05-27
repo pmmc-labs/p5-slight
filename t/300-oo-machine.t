@@ -10,13 +10,13 @@ class Context {
     field $alloc :param :reader;
     field $queue :param :reader;
 
-    field @environments :reader;
+    field @env_stack :reader;
 
-    method current_environment { $environments[-1] }
+    method current_environment { $env_stack[-1] }
 
     method update_env ($env, %local) {
         my $local = $alloc->Env( $env, %local );
-        push @environments => $local;
+        push @env_stack => $local;
         return $local;
     }
 
@@ -27,7 +27,8 @@ class Context {
         return ();
     }
 
-    method run_until_host {
+    method run_until_host ($env) {
+        push @env_stack => $env;
         while (@$queue) {
             say '-' x 80;
             say 'QUEUE: ', join ', ' => @$queue;
@@ -217,7 +218,7 @@ my $ctx = Context->new(
     ]
 );
 
-my $host = $ctx->run_until_host;
+my $host = $ctx->run_until_host( $env );
 
 say '-' x 40;
 say $host;
