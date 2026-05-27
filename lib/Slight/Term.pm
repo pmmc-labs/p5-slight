@@ -54,6 +54,10 @@ class Slight::Term::Env :isa(Slight::Term) {
         }
     }
 
+    method chain {
+        return $self, defined $parent ? $parent->chain : ();
+    }
+
     method to_string {
         sprintf '%s:{%s}'
             => substr($self->hash, 0, 6),
