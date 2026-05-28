@@ -62,7 +62,11 @@ class Slight::Parser {
                     push $stack[-1]->@*, $alloc->False;
                 }
                 default {
-                    push $stack[-1]->@*, $alloc->Sym($token);
+                    if ($token =~ /^\:/) {
+                        push $stack[-1]->@*, $alloc->Tag($token);
+                    } else {
+                        push $stack[-1]->@*, $alloc->Sym($token);
+                    }
                 }
             }
         }

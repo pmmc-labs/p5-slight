@@ -40,6 +40,10 @@ class Yield :isa(Kontinue) {}
 
 class Recv  :isa(Kontinue) {}
 class Send  :isa(Kontinue) {}
+class Wait  :isa(Kontinue) {}
+
+class Getpid  :isa(Kontinue) {}
+class Waitpid :isa(Kontinue) {}
 
 class Fork :isa(Kontinue) {
     field $expr :param :reader;
@@ -208,6 +212,8 @@ class Scope::Leave :isa(Kontinue) {
 class Context {
     use overload '""' => 'to_string';
 
+    use constant DEBUG => !!$ENV{DEBUG_CTX};
+
     field $pid   :param :reader;
     field $alloc :param :reader;
 
@@ -239,7 +245,7 @@ class Context {
             my $next = pop @queue;
             unshift @trace => $next;
             #say '=' x 80;
-            say sprintf ' STEP[%03d]: %s' => $pid, $next;
+            DEBUG && say sprintf ' STEP[%03d]: %s' => $pid, $next;
             given (blessed $next) {
                 when ('Error') {
                     return $next;
@@ -257,6 +263,15 @@ class Context {
                     return $next;
                 }
                 when ('Recv') {
+                    return $next;
+                }
+                when ('Wait') {
+                    return $next;
+                }
+                when ('Getpid') {
+                    return $next;
+                }
+                when ('Waitpid') {
                     return $next;
                 }
                 default {
@@ -285,6 +300,8 @@ class Letter {
 }
 
 class System {
+    use constant DEBUG => !!$ENV{DEBUG_SYS};
+
     field $alloc     :reader :param = undef;
     field $root_env  :reader :param = undef;
 
@@ -318,58 +335,71 @@ class System {
             my $kont = $ctx->run_until_host;
             given (blessed $kont) {
                 when ('Error') {
-                    say ">> SYS.ERROR";
+                    DEBUG && say ">> SYS.ERROR in ${ctx}";
                     push @halted => $ctx;
                 }
                 when ('Halt') {
-                    say ">> SYS.HALT";
+                    DEBUG && say ">> SYS.HALT in ${ctx}";
                     push @halted => $ctx;
                     delete $lookup{ $ctx->pid->raw };
                 }
                 when ('Yield') {
-                    say ">> SYS.YIELD";
+                    DEBUG && say ">> SYS.YIELD in ${ctx}";
                     push @running => $ctx;
                 }
                 when ('Fork') {
-                    say ">> SYS.FORK";
+                    DEBUG && say ">> SYS.FORK in ${ctx}";
                     my $child = $self->spawn_context( $self->assemble( $kont->env, $kont->expr ) );
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $child->pid ) );
                     push @running => $ctx;
                 }
                 when ('Send') {
-                    say ">> SYS.SEND";
+                    DEBUG && say ">> SYS.SEND in ${ctx}";
                     my ($pid, $msg) = $kont->stack;
 
                     my $letter = Letter->new( from => $ctx->pid, to => $pid, msg => $msg );
                     if (my $receiver = $lookup{ $pid->raw }) {
-                        say ">> -- SENDING LETTER ${letter}";
+                        DEBUG && say ">> -- SENDING LETTER ${letter} in ${ctx}";
                         push $mailboxes{ $pid->raw }->@* => $letter;
                         # if blocked .. unblock
                         if (grep { $pid->raw == $_->pid->raw } @blocked) {
-                            say ">> !! UNBLOCKING ${receiver}";
+                            DEBUG && say ">> !! UNBLOCKING ${receiver} in ${ctx}";
                             push @running => $receiver;
                             @blocked = grep { $pid->raw != $_->pid->raw } @blocked;
                         }
                     } else {
-                        say ">> -- DEAD LETTER ${letter}";
+                        DEBUG && say ">> -- DEAD LETTER ${letter} in ${ctx}";
                         push @dead_letters => $letter;
                     }
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $alloc->Nil ) );
                     push @running => $ctx;
                 }
                 when ('Recv') {
-                    say ">> SYS.RECV";
+                    DEBUG && say ">> SYS.RECV in ${ctx}";
                     my $mail = $mailboxes{ $ctx->pid->raw };
                     if (@$mail) {
                         my $letter = shift @$mail;
-                        say ">> -- WEVE GOT MAIL! ${letter}";
+                        DEBUG && say ">> -- WEVE GOT MAIL! ${letter} in ${ctx}";
                         $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $letter->msg ) );
                         push @running => $ctx;
                     } else {
-                        say ">> -- NO MAIL TODAY!";
+                        DEBUG && say ">> -- NO MAIL TODAY! in ${ctx}";
                         $ctx->enqueue( $kont );
                         push @blocked => $ctx;
                     }
+                }
+                when ('Wait') {
+                    DEBUG && say ">> SYS.WAIT in ${ctx}";
+                    die "TODO";
+                }
+                when ('Getpid') {
+                    DEBUG && say ">> SYS.GETPID in ${ctx}";
+                    $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $ctx->pid ) );
+                    push @running => $ctx;
+                }
+                when ('Waitpid') {
+                    DEBUG && say ">> SYS.WAITPID in ${ctx}";
+                    die "TODO";
                 }
                 default {
                     push @running => $ctx;
@@ -465,6 +495,21 @@ class System {
             return @progn;
         }
 
+        # ...
+
+        my sub _getpid ($E) {
+            return Getpid->new( env => $E );
+        }
+
+        my sub _waitpid ($E, $pid) {
+            return Waitpid->new( env => $E ),
+                    Eval::Expr->new( env => $E, expr => $pid );
+        }
+
+        my sub _wait ($E, $pid) {
+            return Wait->new( env => $E );
+        }
+
         my sub _fork ($E, $expr) {
             return Fork->new( env => $E, expr => $expr );
         }
@@ -476,7 +521,7 @@ class System {
 
         my sub _send ($E, $pid, $msg) {
             return Send->new( env => $E ),
-                    Eval::Rest->new( env => $E, rest => $alloc->List( $pid, $msg ) ),
+                    Eval::Rest->new( env => $E, rest => $alloc->List( $pid, $msg ) );
         }
 
         my sub _recv ($E) {
@@ -495,10 +540,13 @@ class System {
             'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
 
             # concurrency forms
-            'fork'   => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,  is_operative => true ),
-            'yield'  => $alloc->Procedure( $alloc->Sym('yield'  ), \&yield,  is_operative => true ),
-            'send'   => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,  is_operative => true ),
-            'recv'   => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,  is_operative => true ),
+            'fork'    => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,    is_operative => true ),
+            'yield'   => $alloc->Procedure( $alloc->Sym('yield'  ), \&yield,    is_operative => true ),
+            'send'    => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,    is_operative => true ),
+            'recv'    => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,    is_operative => true ),
+            'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
+            'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
+            'wait'    => $alloc->Procedure( $alloc->Sym('wait'   ), \&_wait,    is_operative => true ),
 
             # i/o helpers
             'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),
@@ -546,16 +594,26 @@ class System {
 my $sys  = System->new;
 my $prog = $sys->compile(q[
 
-(defun echo () (do
-    (let msg (recv))
-    (say (~ "ECHO: " msg))
-    (yield (echo))))
+(defun player (count)
+    (if (== count 0)
+        (say (~ "Goodbye from " (getpid)))
+        (do
+            (let msg (recv))
+            (let operation (car  msg))
+            (let reply-to  (cdar msg))
+            (say (~ (~ (~ "Got " count) (~ " for " operation)) (~ " at " (getpid))))
+            (if (eq? operation :Ping)
+                (send reply-to (list :Pong (getpid)))
+                (send reply-to (list :Ping (getpid))))
+            (yield (player (- count 1)))
+        )
+    )
+)
 
-(let pid (fork (echo)))
+(let player-1 (fork (player 10)))
+(let player-2 (fork (player 10)))
 
-(send pid "Hello")
-(send pid "World")
-(send pid "Goodbye All")
+(send player-1 (list :Ping player-2))
 
 ]);
 
@@ -572,17 +630,32 @@ foreach my $ctx (@halted) {
 
 __END__
 
+-------------------------------
+
+(defun echo () (do
+    (let msg (recv))
+    (say (~ "ECHO: " msg))
+    (yield (echo))))
+
+(let pid (fork (echo)))
+
+(send pid "Hello")
+(send pid "World")
+(send pid "Goodbye All")
+
+-------------------------------
+
 (defun fact (n)
-        (if (== n 0)
-            (yield 1)
-            (yield (* n (fact (- n 1))))))
+    (if (== n 0)
+        (yield 1)
+        (yield (* n (fact (- n 1))))))
 
 
-    (defun fib (n)
-        (if (< n 2)
-            (yield n)
-            (+ (yield (fib (- n 2)))
-               (yield (fib (- n 1))))))
+(defun fib (n)
+    (if (< n 2)
+        (yield n)
+        (+ (yield (fib (- n 2)))
+           (yield (fib (- n 1))))))
 
-    (say (fork (fact 6)))
-    (say (fork (fib  6)))
+(say (fork (fact 6)))
+(say (fork (fib  6)))
