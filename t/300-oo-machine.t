@@ -33,12 +33,23 @@ class Kontinue {
     }
 }
 
+# Host Kontinues
+
 class Halt  :isa(Kontinue) {}
 class Yield :isa(Kontinue) {}
+
+class Recv  :isa(Kontinue) {}
+class Send  :isa(Kontinue) {}
+
+class Fork :isa(Kontinue) {
+    field $expr :param :reader;
+}
 
 class Error :isa(Kontinue) {
     field $error :param :reader;
 }
+
+# Other Kontinues
 
 class Just :isa(Kontinue) {
     method STEP ($ctx) {
@@ -110,7 +121,8 @@ class Apply::Expr :isa(Kontinue) {
             return Apply::Call->new( env => $self->env, call => $call ),
                     Eval::Rest->new( env => $self->env, rest => $args );
         } else {
-            return Apply::Call->new( env => $self->env, call => $call )->PUSH( $self->env, $self->args->uncons );
+            return Apply::Call->new( env => $self->env, call => $call )
+                              ->PUSH( $self->env, $self->args->is_nil ? () : $self->args->uncons );
         }
     }
 }
@@ -130,10 +142,12 @@ class Apply::Call :isa(Kontinue) {
             }
             when ('Slight::Term::Lambda') {
                 my %local;
-                my @params = $call->params->uncons;
-                while (@params) {
-                    my $param = shift @params;
-                    $local{ $param->raw } = shift @args;
+                if (!$call->params->is_nil) {
+                    my @params = $call->params->uncons;
+                    while (@params) {
+                        my $param = shift @params;
+                        $local{ $param->raw } = shift @args;
+                    }
                 }
                 if (my $rec = $call->name) {
                     $local{ $rec->raw } = $call;
@@ -192,8 +206,11 @@ class Scope::Leave :isa(Kontinue) {
 ## -----------------------------------------------------------------------------
 
 class Context {
+    use overload '""' => 'to_string';
+
     field $pid   :param :reader;
     field $alloc :param :reader;
+
     field @queue :reader;
     field @trace :reader;
 
@@ -215,6 +232,7 @@ class Context {
     method enqueue (@q) { push @queue => @q }
 
     method run_until_host {
+        return $trace[0] unless @queue;
         while (@queue) {
             #say '-' x 80;
             #say sprintf 'QUEUE[%03d]: %s' => $pid, join ', ' => @queue;
@@ -223,10 +241,22 @@ class Context {
             #say '=' x 80;
             say sprintf ' STEP[%03d]: %s' => $pid, $next;
             given (blessed $next) {
+                when ('Error') {
+                    return $next;
+                }
                 when ('Halt') {
                     return $next;
                 }
                 when ('Yield') {
+                    return $next;
+                }
+                when ('Fork') {
+                    return $next;
+                }
+                when ('Send') {
+                    return $next;
+                }
+                when ('Recv') {
                     return $next;
                 }
                 default {
@@ -236,15 +266,35 @@ class Context {
         }
         say '!' x 80;
     }
+
+    method to_string {
+        sprintf 'Ctx(Pid:%03d)' => $pid->raw;
+    }
 }
 
 ## -----------------------------------------------------------------------------
 
+class Letter {
+    use overload '""' => 'to_string';
+    field $from :reader :param;
+    field $to   :reader :param;
+    field $msg  :reader :param;
+    method to_string {
+        sprintf 'msg(from: %s, to: %s, msg: %s)' => $from, $to, $msg;
+    }
+}
+
 class System {
-    field $alloc    :reader :param = undef;
-    field $root_env :reader :param = undef;
-    field @running  :reader;
-    field @halted   :reader;
+    field $alloc     :reader :param = undef;
+    field $root_env  :reader :param = undef;
+
+    field @running   :reader;
+    field @blocked   :reader;
+    field @halted    :reader;
+    field %lookup    :reader;
+
+    field %mailboxes    :reader; # PID -> Letter[]
+    field @dead_letters :reader; # Letter[]
 
     ADJUST {
         $alloc    //= Slight::Allocator->new;
@@ -254,8 +304,10 @@ class System {
     our $PID_SEQ = 0;
 
     method spawn_context ($exprs) {
-        my $ctx = Context->new( pid => ++$PID_SEQ, alloc => $alloc );
+        my $ctx = Context->new( pid => $alloc->Num(++$PID_SEQ), alloc => $alloc );
         $ctx->enqueue( @$exprs );
+        $mailboxes{ $ctx->pid->raw } = +[];
+        $lookup{ $ctx->pid->raw } = $ctx;
         push @running => $ctx;
         return $ctx;
     }
@@ -264,10 +316,64 @@ class System {
         while (@running) {
             my $ctx  = shift @running;
             my $kont = $ctx->run_until_host;
-            if ($kont isa Halt) {
-                push @halted => $ctx;
-            } else {
-                push @running => $ctx;
+            given (blessed $kont) {
+                when ('Error') {
+                    say ">> SYS.ERROR";
+                    push @halted => $ctx;
+                }
+                when ('Halt') {
+                    say ">> SYS.HALT";
+                    push @halted => $ctx;
+                    delete $lookup{ $ctx->pid->raw };
+                }
+                when ('Yield') {
+                    say ">> SYS.YIELD";
+                    push @running => $ctx;
+                }
+                when ('Fork') {
+                    say ">> SYS.FORK";
+                    my $child = $self->spawn_context( $self->assemble( $kont->env, $kont->expr ) );
+                    $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $child->pid ) );
+                    push @running => $ctx;
+                }
+                when ('Send') {
+                    say ">> SYS.SEND";
+                    my ($pid, $msg) = $kont->stack;
+
+                    my $letter = Letter->new( from => $ctx->pid, to => $pid, msg => $msg );
+                    if (my $receiver = $lookup{ $pid->raw }) {
+                        say ">> -- SENDING LETTER ${letter}";
+                        push $mailboxes{ $pid->raw }->@* => $letter;
+                        # if blocked .. unblock
+                        if (grep { $pid->raw == $_->pid->raw } @blocked) {
+                            say ">> !! UNBLOCKING ${receiver}";
+                            push @running => $receiver;
+                            @blocked = grep { $pid->raw != $_->pid->raw } @blocked;
+                        }
+                    } else {
+                        say ">> -- DEAD LETTER ${letter}";
+                        push @dead_letters => $letter;
+                    }
+                    $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $alloc->Nil ) );
+                    push @running => $ctx;
+                }
+                when ('Recv') {
+                    say ">> SYS.RECV";
+                    my $mail = $mailboxes{ $ctx->pid->raw };
+                    if (@$mail) {
+                        my $letter = shift @$mail;
+                        say ">> -- WEVE GOT MAIL! ${letter}";
+                        $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $letter->msg ) );
+                        push @running => $ctx;
+                    } else {
+                        say ">> -- NO MAIL TODAY!";
+                        $ctx->enqueue( $kont );
+                        push @blocked => $ctx;
+                    }
+                }
+                default {
+                    push @running => $ctx;
+                }
             }
         }
         return @halted;
@@ -275,11 +381,15 @@ class System {
 
     method compile ($src) {
         my @exprs = Slight::Parser->new( alloc => $alloc )->parse( $src );
+        return $self->assemble( $root_env, @exprs );
+    }
+
+    method assemble ($env, @exprs) {
         return +[
-            Halt->new( env => $root_env ),
+            Halt->new( env => $env ),
             (reverse map {
-                Drop->new( env => $root_env ),
-                Eval::Expr->new( env => $root_env, expr => $_ )
+                Drop->new( env => $env ),
+                Eval::Expr->new( env => $env, expr => $_ )
             } @exprs),
         ];
     }
@@ -318,6 +428,11 @@ class System {
         my sub cons ($h, $t) { $alloc->Cons( $h, $t ) }
         my sub list (@items) { $alloc->List( @items ) }
 
+        my sub _say (@args) {
+            say @args;
+            return $alloc->Nil;
+        }
+
         my sub lambda ($E, $p, $b) {
             Just->new( env => $E )->PUSH( $alloc->Lambda( $p, $b, $E ) )
         }
@@ -336,11 +451,6 @@ class System {
                    Eval::Expr->new( env => $E, expr => $value );
         }
 
-        my sub yield ($E, $expr) {
-            return Eval::Expr->new( env => $E, expr => $expr ),
-                   Yield->new( env => $E );
-        }
-
         my sub _if ($E, $cond, $if_true, $if_false) {
             return Cond->new( env => $E, if_true => $if_true, if_false => $if_false ),
                    Eval::Expr->new( env => $E, expr => $cond );
@@ -355,6 +465,26 @@ class System {
             return @progn;
         }
 
+        my sub _fork ($E, $expr) {
+            return Fork->new( env => $E, expr => $expr );
+        }
+
+        my sub yield ($E, $expr) {
+            return Eval::Expr->new( env => $E, expr => $expr ),
+                   Yield->new( env => $E );
+        }
+
+        my sub _send ($E, $pid, $msg) {
+            return Send->new( env => $E ),
+                    Eval::Rest->new( env => $E, rest => $alloc->List( $pid, $msg ) ),
+        }
+
+        my sub _recv ($E) {
+            return Recv->new( env => $E );
+        }
+
+        # ...
+
         $alloc->Env(
             # special forms
             'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
@@ -363,7 +493,15 @@ class System {
             'let'    => $alloc->Procedure( $alloc->Sym('let'    ), \&let,    is_operative => true ),
             'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
             'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
+
+            # concurrency forms
+            'fork'   => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,  is_operative => true ),
             'yield'  => $alloc->Procedure( $alloc->Sym('yield'  ), \&yield,  is_operative => true ),
+            'send'   => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,  is_operative => true ),
+            'recv'   => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,  is_operative => true ),
+
+            # i/o helpers
+            'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),
 
             # predicates
             'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
@@ -406,40 +544,22 @@ class System {
 
 ## -----------------------------------------------------------------------------
 my $sys  = System->new;
-my $fact = $sys->compile(q[
+my $prog = $sys->compile(q[
 
-; (defun fact (n)
-;     (if (== n 0) 1
-;         (* n (fact (- n 1)))))
+(defun echo () (do
+    (let msg (recv))
+    (say (~ "ECHO: " msg))
+    (yield (echo))))
 
-(defun fact (n)
-    (if (== n 0)
-        (yield 1)
-        (yield (* n (fact (- n 1))))))
+(let pid (fork (echo)))
 
-(fact 3)
-
-]);
-
-my $fib = $sys->compile(q[
-
-; (defun fib (n)
-;         (if (< n 2) n
-;             (+ (fib (- n 2))
-;                (fib (- n 1)))))
-
-(defun fib (n)
-    (if (< n 2)
-        (yield n)
-        (+ (yield (fib (- n 2)))
-           (yield (fib (- n 1))))))
-
-(fib 3)
+(send pid "Hello")
+(send pid "World")
+(send pid "Goodbye All")
 
 ]);
 
-my $fact_ctx = $sys->spawn_context( $fact );
-my $fib_ctx  = $sys->spawn_context( $fib );
+my $prog_ctx = $sys->spawn_context( $prog );
 my @halted   = $sys->run;
 
 foreach my $ctx (@halted) {
@@ -450,4 +570,19 @@ foreach my $ctx (@halted) {
 }
 
 
+__END__
 
+(defun fact (n)
+        (if (== n 0)
+            (yield 1)
+            (yield (* n (fact (- n 1))))))
+
+
+    (defun fib (n)
+        (if (< n 2)
+            (yield n)
+            (+ (yield (fib (- n 2)))
+               (yield (fib (- n 1))))))
+
+    (say (fork (fact 6)))
+    (say (fork (fib  6)))
