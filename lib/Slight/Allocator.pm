@@ -37,6 +37,16 @@ class Slight::Allocator {
         $terms{ $hash } //= Slight::Term::PID->new( raw => $pid, hash => $hash );
     }
 
+    method Triple ($s, $p, $o) {
+        my $hash = Slight::Term::Triple->hash_of( $s->hash, $p->hash, $o->hash );
+        $terms{ $hash } //= Slight::Term::Triple->new(
+            hash      => $hash,
+            subject   => $s,
+            predicate => $p,
+            object    => $o,
+        );
+    }
+
     method Num ($n) {
         my $hash = Slight::Term::Num->hash_of($n);
         $terms{ $hash } //= Slight::Term::Num->new( raw => $n, hash => $hash )
