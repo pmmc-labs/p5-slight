@@ -35,18 +35,6 @@ class Slight::Term::PID :isa(Slight::Term) {
 }
 
 ## ------------------------------------
-## Triples
-## ------------------------------------
-
-class Slight::Term::Triple :isa(Slight::Term) {
-    field $subject   :param :reader;
-    field $predicate :param :reader;
-    field $object    :param :reader;
-
-    method to_string { sprintf '{%s %s %s}' => $subject, $predicate, $object }
-}
-
-## ------------------------------------
 ## Environment
 ## ------------------------------------
 
