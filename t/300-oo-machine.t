@@ -312,6 +312,7 @@ class System {
 
     field %mailboxes    :reader; # PID -> Letter[]
     field @dead_letters :reader; # Letter[]
+    field %watchers     :reader = ( __ALL__ => +[] );
 
     ADJUST {
         $alloc    //= Slight::Allocator->new;
@@ -342,6 +343,14 @@ class System {
                     DEBUG && say ">> SYS.HALT in ${ctx}";
                     push @halted => $ctx;
                     delete $lookup{ $ctx->pid->raw };
+                    if (scalar @running == 0) {
+                        DEBUG && say ">> -- NOTHING MORE TO RUN in ${ctx}";
+                        if ($watchers{__ALL__}->@*) {
+                            my @watchers = $watchers{__ALL__}->@*;
+                            $watchers{__ALL__}->@* = ();
+                            push @running => @watchers;
+                        }
+                    }
                 }
                 when ('Yield') {
                     DEBUG && say ">> SYS.YIELD in ${ctx}";
@@ -391,6 +400,7 @@ class System {
                 when ('Wait') {
                     DEBUG && say ">> SYS.WAIT in ${ctx}";
                     die "TODO";
+                    push $watchers{__ALL__}->@* => $ctx;
                 }
                 when ('Getpid') {
                     DEBUG && say ">> SYS.GETPID in ${ctx}";
@@ -614,6 +624,10 @@ my $prog = $sys->compile(q[
 (let player-2 (fork (player 10)))
 
 (send player-1 (list :Ping player-2))
+
+(wait)
+
+(say "Goodbye from main!")
 
 ]);
 
