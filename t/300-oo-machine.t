@@ -330,6 +330,36 @@ class System {
         return $ctx;
     }
 
+    method block ($ctx) {
+        # return if already blocked
+        return if grep { $ctx->pid->raw == $_->pid->raw } @blocked;
+        DEBUG && say ">> !! BLOCKING ${ctx}";
+        push @blocked => $ctx;
+    }
+
+    method unblock ($ctx) {
+        # return if not blocked
+        return unless grep { $ctx->pid->raw == $_->pid->raw } @blocked;
+        DEBUG && say ">> !! UNBLOCKING ${ctx}";
+        @blocked = grep { $ctx->pid->raw != $_->pid->raw } @blocked;
+        $self->kontinue($ctx);
+    }
+
+    method kontinue ($ctx) {
+        # return if already running
+        return if grep { $ctx->pid->raw == $_->pid->raw } @running;
+        DEBUG && say ">> !! CONTINUING ${ctx}";
+        push @running => $ctx;
+    }
+
+    method halt ($ctx) {
+        # return if already removed from lookup
+        return if not exists $lookup{ $ctx->pid->raw };
+        DEBUG && say ">> !! HALTING ${ctx}";
+        push @halted => $ctx;
+        delete $lookup{ $ctx->pid->raw };
+    }
+
     method run {
         while (@running) {
             my $ctx  = shift @running;
@@ -337,51 +367,37 @@ class System {
             given (blessed $kont) {
                 when ('Error') {
                     DEBUG && say ">> SYS.ERROR in ${ctx}";
-                    push @halted => $ctx;
+                    $self->halt($ctx);
                 }
                 when ('Halt') {
                     DEBUG && say ">> SYS.HALT in ${ctx}";
-                    push @halted => $ctx;
-                    delete $lookup{ $ctx->pid->raw };
-                    if (scalar @running == 0) {
-                        DEBUG && say ">> -- NOTHING MORE TO RUN in ${ctx}";
-                        if ($watchers{__ALL__}->@*) {
-                            my @watchers = $watchers{__ALL__}->@*;
-                            $watchers{__ALL__}->@* = ();
-                            push @running => @watchers;
-                        }
-                    }
+                    $self->halt($ctx);
                 }
                 when ('Yield') {
                     DEBUG && say ">> SYS.YIELD in ${ctx}";
-                    push @running => $ctx;
+                    $self->kontinue( $ctx );
                 }
                 when ('Fork') {
                     DEBUG && say ">> SYS.FORK in ${ctx}";
                     my $child = $self->spawn_context( $self->assemble( $kont->env, $kont->expr ) );
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $child->pid ) );
-                    push @running => $ctx;
+                    $self->kontinue( $ctx );
                 }
                 when ('Send') {
                     DEBUG && say ">> SYS.SEND in ${ctx}";
                     my ($pid, $msg) = $kont->stack;
 
                     my $letter = Letter->new( from => $ctx->pid, to => $pid, msg => $msg );
-                    if (my $receiver = $lookup{ $pid->raw }) {
+                    if (my $recvr = $lookup{ $pid->raw }) {
                         DEBUG && say ">> -- SENDING LETTER ${letter} in ${ctx}";
                         push $mailboxes{ $pid->raw }->@* => $letter;
-                        # if blocked .. unblock
-                        if (grep { $pid->raw == $_->pid->raw } @blocked) {
-                            DEBUG && say ">> !! UNBLOCKING ${receiver} in ${ctx}";
-                            push @running => $receiver;
-                            @blocked = grep { $pid->raw != $_->pid->raw } @blocked;
-                        }
+                        $self->unblock( $recvr );
                     } else {
                         DEBUG && say ">> -- DEAD LETTER ${letter} in ${ctx}";
                         push @dead_letters => $letter;
                     }
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $alloc->Nil ) );
-                    push @running => $ctx;
+                    $self->kontinue( $ctx );
                 }
                 when ('Recv') {
                     DEBUG && say ">> SYS.RECV in ${ctx}";
@@ -390,29 +406,28 @@ class System {
                         my $letter = shift @$mail;
                         DEBUG && say ">> -- WEVE GOT MAIL! ${letter} in ${ctx}";
                         $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $letter->msg ) );
-                        push @running => $ctx;
+                        $self->kontinue( $ctx );
                     } else {
                         DEBUG && say ">> -- NO MAIL TODAY! in ${ctx}";
                         $ctx->enqueue( $kont );
-                        push @blocked => $ctx;
+                        $self->block( $ctx );
                     }
                 }
                 when ('Wait') {
                     DEBUG && say ">> SYS.WAIT in ${ctx}";
-                    die "TODO";
-                    push $watchers{__ALL__}->@* => $ctx;
+                    $self->block( $ctx );
                 }
                 when ('Getpid') {
                     DEBUG && say ">> SYS.GETPID in ${ctx}";
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $ctx->pid ) );
-                    push @running => $ctx;
+                    $self->kontinue( $ctx );
                 }
                 when ('Waitpid') {
                     DEBUG && say ">> SYS.WAITPID in ${ctx}";
-                    die "TODO";
+                    $self->block( $ctx );
                 }
                 default {
-                    push @running => $ctx;
+                    $self->kontinue( $ctx );
                 }
             }
         }
@@ -516,7 +531,7 @@ class System {
                     Eval::Expr->new( env => $E, expr => $pid );
         }
 
-        my sub _wait ($E, $pid) {
+        my sub _wait ($E) {
             return Wait->new( env => $E );
         }
 
@@ -624,10 +639,6 @@ my $prog = $sys->compile(q[
 (let player-2 (fork (player 10)))
 
 (send player-1 (list :Ping player-2))
-
-(wait)
-
-(say "Goodbye from main!")
 
 ]);
 
