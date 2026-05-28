@@ -38,12 +38,9 @@ class Kontinue {
 class Halt  :isa(Kontinue) {}
 class Yield :isa(Kontinue) {}
 
-class Recv  :isa(Kontinue) {}
-class Send  :isa(Kontinue) {}
-class Wait  :isa(Kontinue) {}
-
-class Getpid  :isa(Kontinue) {}
-class Waitpid :isa(Kontinue) {}
+class Recv   :isa(Kontinue) {}
+class Send   :isa(Kontinue) {}
+class Getpid :isa(Kontinue) {}
 
 class Fork :isa(Kontinue) {
     field $expr :param :reader;
@@ -265,13 +262,7 @@ class Context {
                 when ('Recv') {
                     return $next;
                 }
-                when ('Wait') {
-                    return $next;
-                }
                 when ('Getpid') {
-                    return $next;
-                }
-                when ('Waitpid') {
                     return $next;
                 }
                 default {
@@ -413,18 +404,10 @@ class System {
                         $self->block( $ctx );
                     }
                 }
-                when ('Wait') {
-                    DEBUG && say ">> SYS.WAIT in ${ctx}";
-                    $self->block( $ctx );
-                }
                 when ('Getpid') {
                     DEBUG && say ">> SYS.GETPID in ${ctx}";
                     $ctx->enqueue( Just->new( env => $kont->env )->PUSH( $ctx->pid ) );
                     $self->kontinue( $ctx );
-                }
-                when ('Waitpid') {
-                    DEBUG && say ">> SYS.WAITPID in ${ctx}";
-                    $self->block( $ctx );
                 }
                 default {
                     $self->kontinue( $ctx );
