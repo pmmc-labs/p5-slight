@@ -11,9 +11,10 @@ class Slight::Context {
 
     use constant DEBUG => !!$ENV{DEBUG_CTX};
 
-    field $pid   :param :reader;
-    field $alloc :param :reader;
+    field $pid    :param :reader;
+    field $alloc  :param :reader;
 
+    field $ticks = 0;
     field @queue :reader;
     field @trace :reader;
 
@@ -37,10 +38,13 @@ class Slight::Context {
     method run_until_host {
         return $trace[0] unless @queue;
         while (@queue) {
+            $ticks++;
             my $next = pop @queue;
             unshift @trace => $next;
-            DEBUG && say sprintf ' STEP[%03d]: %s' => $pid, $next;
-            return $next if $next isa Slight::Kontinue::HOST;
+            DEBUG && say sprintf '%s STEP[%03d] %s' => $pid, $ticks, $next;
+            if ($next isa Slight::Kontinue::HOST) {
+                return $next;
+            }
             push @queue => $next->STEP( $self );
         }
         die "You fell of the edge of the world, this should not happen!";

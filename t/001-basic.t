@@ -19,6 +19,53 @@ my $prog = $sys->compile(q[
             (let reply-to  (cdar msg))
             (say (~ (~ (~ "Got " count) (~ " for " operation)) (~ " at " (getpid))))
             (if (eq? operation :Ping)
+                (reply-to ! [:Pong (getpid)])
+                (reply-to ! [:Ping (getpid)]))
+            (yield (player (- count 1)))
+        )
+    )
+)
+
+(let player-1 (fork (player 10)))
+(let player-2 (fork (player 10)))
+
+(player-1 ! [:Ping player-2])
+
+
+
+]);
+
+my $prog_ctx = $sys->spawn_context( $prog );
+
+
+my @halted = $sys->run;
+
+foreach my $ctx (@halted) {
+    my ($last) = $ctx->trace;
+    say '-' x 40;
+    if ($last isa Slight::Kontinue::Error) {
+        say join ' ' => $last, $last->error;
+    } else {
+        say $last;
+    }
+    say "  - ", join "\n  - " => $last->env->chain;
+}
+
+
+__END__
+
+
+-------------------------------
+
+(defun player (count)
+    (if (== count 0)
+        (say (~ "Goodbye from " (getpid)))
+        (do
+            (let msg (recv))
+            (let operation (car  msg))
+            (let reply-to  (cdar msg))
+            (say (~ (~ (~ "Got " count) (~ " for " operation)) (~ " at " (getpid))))
+            (if (eq? operation :Ping)
                 (send reply-to (list :Pong (getpid)))
                 (send reply-to (list :Ping (getpid))))
             (yield (player (- count 1)))
@@ -30,21 +77,6 @@ my $prog = $sys->compile(q[
 (let player-2 (fork (player 10)))
 
 (send player-1 (list :Ping player-2))
-
-]);
-
-my $prog_ctx = $sys->spawn_context( $prog );
-my @halted   = $sys->run;
-
-foreach my $ctx (@halted) {
-    my ($last) = $ctx->trace;
-    say '-' x 40;
-    say $last;
-    say "  - ", join "\n  - " => $last->env->chain;
-}
-
-
-__END__
 
 -------------------------------
 

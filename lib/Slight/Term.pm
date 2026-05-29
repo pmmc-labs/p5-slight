@@ -31,7 +31,7 @@ class Slight::Term {
 class Slight::Term::PID :isa(Slight::Term) {
     field $raw :param :reader;
 
-    method to_string { sprintf 'PID<%d>' => $raw }
+    method to_string { sprintf 'PID[%d]' => $raw }
 }
 
 ## ------------------------------------
@@ -70,6 +70,17 @@ class Slight::Term::Env :isa(Slight::Term) {
 }
 
 ## ------------------------------------
+## Symbols
+## ------------------------------------
+
+class Slight::Term::Sym :isa(Slight::Term) {
+    field $raw :param :reader;
+    method to_string { "${raw}" }
+}
+
+class Slight::Term::Tag :isa(Slight::Term::Sym) {}
+
+## ------------------------------------
 ## Literal Values
 ## ------------------------------------
 
@@ -78,9 +89,6 @@ class Slight::Term::Literal :isa(Slight::Term) {
 
     method to_string { "${raw}" }
 }
-
-class Slight::Term::Sym :isa(Slight::Term::Literal) {}
-class Slight::Term::Tag :isa(Slight::Term::Sym) {}
 
 class Slight::Term::Num :isa(Slight::Term::Literal) {}
 class Slight::Term::Str :isa(Slight::Term::Literal) {
@@ -111,6 +119,7 @@ class Slight::Term::Nil  :isa(Slight::Term::List) {
     method to_string { '()' }
     method raw { () }
 }
+
 class Slight::Term::Cons :isa(Slight::Term::List) {
     field $head :param :reader;
     field $tail :param :reader;

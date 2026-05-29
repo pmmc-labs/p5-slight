@@ -43,11 +43,15 @@ class Slight {
     our $PID_SEQ = 0;
 
     method spawn_context ($exprs) {
-        my $ctx = Slight::Context->new( pid => $alloc->PID(++$PID_SEQ), alloc => $alloc );
+        my $ctx = Slight::Context->new(
+            pid   => $alloc->PID(++$PID_SEQ),
+            alloc => $alloc,
+        );
         $ctx->enqueue( @$exprs );
         $mailboxes{ $ctx->pid->raw } = +[];
         $lookup{ $ctx->pid->raw } = $ctx;
         push @running => $ctx;
+        DEBUG && say ">> ^^ SPAWN ${ctx}";
         return $ctx;
     }
 

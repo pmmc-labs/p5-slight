@@ -8,7 +8,7 @@ use Slight::Allocator;
 use Slight::WorkingMemory;
 
 my $alloc = Slight::Allocator->new;
-my $ts    = Slight::WorkingMemory->new( alloc => $alloc );
+my $wm    = Slight::WorkingMemory->new( alloc => $alloc );
 
 my $bob   = $alloc->Sym('Bob');
 my $alice = $alloc->Sym('Alice');
@@ -21,34 +21,36 @@ my $knows          = $alloc->Sym('knows?');
 my $works_with     = $alloc->Sym('works-with?');
 
 my @facts = (
-    $ts->assert( $bob, $has_first_name, $alloc->Str("Robert") ),
-    $ts->assert( $bob, $has_last_name,  $alloc->Str("Smith") ),
-    $ts->assert( $bob, $has_age,        $alloc->Num(50) ),
+    $wm->assert( $bob, $has_first_name, $alloc->Str("Robert") ),
+    $wm->assert( $bob, $has_last_name,  $alloc->Str("Smith") ),
+    $wm->assert( $bob, $has_age,        $alloc->Num(50) ),
 
-    $ts->assert( $alice, $has_first_name, $alloc->Str("Allison") ),
-    $ts->assert( $alice, $has_last_name,  $alloc->Str("Chains") ),
-    $ts->assert( $alice, $has_age,        $alloc->Num(40) ),
+    $wm->assert( $alice, $has_first_name, $alloc->Str("Allison") ),
+    $wm->assert( $alice, $has_last_name,  $alloc->Str("Chains") ),
+    $wm->assert( $alice, $has_age,        $alloc->Num(40) ),
 
-    $ts->assert( $chris, $has_first_name, $alloc->Str("Christopher") ),
-    $ts->assert( $chris, $has_last_name,  $alloc->Str("Cross") ),
-    $ts->assert( $chris, $has_age,        $alloc->Num(60) ),
+    $wm->assert( $chris, $has_first_name, $alloc->Str("Christopher") ),
+    $wm->assert( $chris, $has_last_name,  $alloc->Str("Cross") ),
+    $wm->assert( $chris, $has_age,        $alloc->Num(60) ),
 
-    $ts->assert( $bob, $knows, $alice ),
-    $ts->assert( $bob, $knows, $chris ),
-    $ts->assert( $chris, $knows, $bob ),
-    $ts->assert( $alice, $knows, $bob ),
-    $ts->assert( $alice, $knows, $chris ),
-    $ts->assert( $alice, $works_with, $chris ),
-    $ts->assert( $chris, $works_with, $alice ),
+    $wm->assert( $bob, $knows, $alice ),
+    $wm->assert( $bob, $knows, $chris ),
+    $wm->assert( $chris, $knows, $bob ),
+    $wm->assert( $alice, $knows, $bob ),
+    $wm->assert( $alice, $knows, $chris ),
+    $wm->assert( $alice, $works_with, $chris ),
+    $wm->assert( $chris, $works_with, $alice ),
 );
+
+my $__ = $wm->HOLE;
 
 say $_ foreach @facts;
 say '-' x 100;
-say '( alice _          chris) = ', join ', ' => $ts->query( $alice,   undef,     $chris );
-say '( _     works-with alice) = ', join ', ' => $ts->query( undef,   $works_with, $alice );
-say '( bob _       _     ) = ', join ', ' => $ts->query( $bob, undef, undef );
-say '( _   _       chris ) = ', join ', ' => $ts->query( undef, undef, $chris );
-say '( _   has-age _     ) = ', join ', ' => $ts->query( undef, $has_age, undef );
+say '( alice _          chris) = ', join ', ' => $wm->query( $alice, $__,         $chris );
+say '( _     works-with alice) = ', join ', ' => $wm->query( $__,    $works_with, $alice );
+say '( bob _       _     ) = ', join ', ' => $wm->query( $bob, $__,      $__ );
+say '( _   _       chris ) = ', join ', ' => $wm->query( $__,  $__,      $chris );
+say '( _   has-age _     ) = ', join ', ' => $wm->query( $__,  $has_age, $__ );
 
 
 

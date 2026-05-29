@@ -23,7 +23,7 @@ class Slight::Kontinue {
 
     method to_string {
         sprintf '%s[%s]@%s' =>
-            __CLASS__,
+            (__CLASS__ =~ s/Slight\:\:Kontinue\:\://r),
             substr($env->hash, 0, 6),
             (scalar @stack ? ('( '.(join ', ' => @stack).' )') : '()');
     }
@@ -108,7 +108,29 @@ class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue) {
 
     method STEP ($ctx) {
         my ($call) = $self->stack;
-        if ($call->is_applicative) {
+        if ($call isa Slight::Term::PID) {
+            my $method = $self->args->head;
+            my $args   = $self->args->tail;
+            given ($method->raw) {
+                when ('!') {
+                    return Slight::Kontinue::Apply::Call->new(
+                        env  => $self->env,
+                        call => $self->env->lookup( $ctx->alloc->Sym('send') ),
+                    )->PUSH(
+                        $self->env,
+                        $call,
+                        $args->is_nil ? () : $args->uncons
+                    )
+                }
+                default {
+                    return Slight::Kontinue::Error->new(
+                        env   => $self->env,
+                        error => $ctx->alloc->Str("Unhandled PID method: ${method}")
+                    )
+                }
+            }
+        }
+        elsif ($call->is_applicative) {
             return Slight::Kontinue::Apply::Call->new( env => $self->env, call => $call ),
                     Slight::Kontinue::Eval::Rest->new( env => $self->env, rest => $args );
         } else {
