@@ -31,14 +31,58 @@ class Slight::Kontinue {
 
 # Host Kontinues
 
-class Slight::Kontinue::HOST   :isa(Slight::Kontinue) {}
-class Slight::Kontinue::Halt   :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Yield  :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Recv   :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Send   :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Getpid :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Fork   :isa(Slight::Kontinue::HOST) { field $expr :param :reader; }
-class Slight::Kontinue::Error  :isa(Slight::Kontinue::HOST) { field $error :param :reader; }
+class Slight::Kontinue::HOST :isa(Slight::Kontinue) {}
+
+# basic halt/error
+class Slight::Kontinue::Halt  :isa(Slight::Kontinue::HOST) {}
+class Slight::Kontinue::Error :isa(Slight::Kontinue::HOST) {
+    field $error :param :reader;
+}
+
+# concurrency
+class Slight::Kontinue::Concurrency :isa(Slight::Kontinue::HOST) {}
+class Slight::Kontinue::Yield       :isa(Slight::Kontinue::Concurrency) {}
+class Slight::Kontinue::Recv        :isa(Slight::Kontinue::Concurrency) {}
+class Slight::Kontinue::Send        :isa(Slight::Kontinue::Concurrency) {}
+class Slight::Kontinue::Getpid      :isa(Slight::Kontinue::Concurrency) {}
+class Slight::Kontinue::Fork        :isa(Slight::Kontinue::Concurrency) {
+    field $expr :param :reader;
+}
+
+
+# Memory operations
+
+class Slight::Kontinue::MemOp :isa(Slight::Kontinue) {
+    field $subject   :param :reader;
+    field $predicate :param :reader;
+    field $object    :param :reader;
+}
+
+class Slight::Kontinue::MemOp::Assert :isa(Slight::Kontinue::MemOp) {
+    method STEP ($ctx) {
+        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
+            $ctx->memory->assert( $self->subject, $self->predicate, $self->object )
+        );
+    }
+}
+
+class Slight::Kontinue::MemOp::Query :isa(Slight::Kontinue::MemOp) {
+    method STEP ($ctx) {
+        my @results = $ctx->memory->query( $self->subject, $self->predicate, $self->object );
+        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
+            $ctx->alloc->List( @results )
+        );
+    }
+}
+
+class Slight::Kontinue::MemOp::Retract :isa(Slight::Kontinue::MemOp) {
+    method STEP ($ctx) {
+        my $ok = $ctx->memory->retract( $self->subject, $self->predicate, $self->object );
+        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
+            $ok ? $ctx->alloc->True : $ctx->alloc->False
+        );
+    }
+}
 
 # Other Kontinues
 
@@ -108,29 +152,7 @@ class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue) {
 
     method STEP ($ctx) {
         my ($call) = $self->stack;
-        if ($call isa Slight::Term::PID) {
-            my $method = $self->args->head;
-            my $args   = $self->args->tail;
-            given ($method->raw) {
-                when ('!') {
-                    return Slight::Kontinue::Apply::Call->new(
-                        env  => $self->env,
-                        call => $self->env->lookup( $ctx->alloc->Sym('send') ),
-                    )->PUSH(
-                        $self->env,
-                        $call,
-                        $args->is_nil ? () : $args->uncons
-                    )
-                }
-                default {
-                    return Slight::Kontinue::Error->new(
-                        env   => $self->env,
-                        error => $ctx->alloc->Str("Unhandled PID method: ${method}")
-                    )
-                }
-            }
-        }
-        elsif ($call->is_applicative) {
+        if ($call->is_applicative) {
             return Slight::Kontinue::Apply::Call->new( env => $self->env, call => $call ),
                     Slight::Kontinue::Eval::Rest->new( env => $self->env, rest => $args );
         } else {

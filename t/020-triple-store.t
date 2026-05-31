@@ -4,53 +4,75 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
-use Slight::Allocator;
+use Slight;
 use Slight::WorkingMemory;
 
-my $alloc = Slight::Allocator->new;
-my $wm    = Slight::WorkingMemory->new( alloc => $alloc );
+my $sys  = Slight->new;
+my $prog = $sys->compile(q[
 
-my $bob   = $alloc->Sym('Bob');
-my $alice = $alloc->Sym('Alice');
-my $chris = $alloc->Sym('Chris');
+(assert+ Bob   knows    Alice )
+(assert+ Bob   knows    Chris )
+(assert+ Chris knows    Bob   )
+(assert+ Chris works-w/ Alice )
+(assert+ Chris knows    Alice )
+(assert+ Alice knows    Bob   )
+(assert+ Alice knows    Chris )
+(assert+ Alice works-w/ Chris )
 
-my $has_first_name = $alloc->Sym('has-first-name');
-my $has_last_name  = $alloc->Sym('has-last-name');
-my $has_age        = $alloc->Sym('has-age');
-my $knows          = $alloc->Sym('knows?');
-my $works_with     = $alloc->Sym('works-with?');
+(say (query? Alice :_       Chris ))
+(say (query? :_    works-w/ Alice ))
+(say (query? Bob   :_       :_    ))
+(say (query? :_    :_       Chris ))
 
-my @facts = (
-    $wm->assert( $bob, $has_first_name, $alloc->Str("Robert") ),
-    $wm->assert( $bob, $has_last_name,  $alloc->Str("Smith") ),
-    $wm->assert( $bob, $has_age,        $alloc->Num(50) ),
+(say (retract! Alice knows Chris ))
 
-    $wm->assert( $alice, $has_first_name, $alloc->Str("Allison") ),
-    $wm->assert( $alice, $has_last_name,  $alloc->Str("Chains") ),
-    $wm->assert( $alice, $has_age,        $alloc->Num(40) ),
+(say (query? :_ :_ Chris ))
 
-    $wm->assert( $chris, $has_first_name, $alloc->Str("Christopher") ),
-    $wm->assert( $chris, $has_last_name,  $alloc->Str("Cross") ),
-    $wm->assert( $chris, $has_age,        $alloc->Num(60) ),
+]);
 
-    $wm->assert( $bob, $knows, $alice ),
-    $wm->assert( $bob, $knows, $chris ),
-    $wm->assert( $chris, $knows, $bob ),
-    $wm->assert( $alice, $knows, $bob ),
-    $wm->assert( $alice, $knows, $chris ),
-    $wm->assert( $alice, $works_with, $chris ),
-    $wm->assert( $chris, $works_with, $alice ),
-);
+my $prog_ctx = $sys->spawn_context( $prog );
 
-my $__ = $wm->HOLE;
+my @halted = $sys->run;
 
-say $_ foreach @facts;
-say '-' x 100;
-say '( alice _          chris) = ', join ', ' => $wm->query( $alice, $__,         $chris );
-say '( _     works-with alice) = ', join ', ' => $wm->query( $__,    $works_with, $alice );
-say '( bob _       _     ) = ', join ', ' => $wm->query( $bob, $__,      $__ );
-say '( _   _       chris ) = ', join ', ' => $wm->query( $__,  $__,      $chris );
-say '( _   has-age _     ) = ', join ', ' => $wm->query( $__,  $has_age, $__ );
+foreach my $ctx (@halted) {
+    my ($last) = $ctx->trace;
+    say '-' x 40;
+    if ($last isa Slight::Kontinue::Error) {
+        say join ' ' => $last, $last->error;
+    } else {
+        say $last;
+    }
+    say "  - ", join "\n  - " => $last->env->chain;
+}
+
+__END__
+
+;; local commits inside an actor
+;; would look like this and commit
+;; to the local working memory
+(commit :message "Adding Bob and Chris stuff"
+    (patch
+        (assert! Bob   :knows    Alice )
+        (assert! Bob   :knows    Chris )
+        (assert! Chris :knows    Bob   )
+        (assert! Chris :works-w/ Alice )
+        (assert! Chris :knows    Alice )))
 
 
+;; local queries
 
+(let mutuals
+    (where? (x)
+        (and (x :knows Alice)
+             (x :knows Chris))))
+
+;; patches from other actors are sent
+;; as merge requests messages
+(send PID (merge-request
+    :author     (getpid)
+    :description "Adding Alice stuff"
+    (patch
+        (assert! Alice :knows    Bob   )
+        (assert! Alice :knows    Chris )
+        (assert! Alice :works-w/ Chris )
+        (retract Chris :knows    Bob   ))))

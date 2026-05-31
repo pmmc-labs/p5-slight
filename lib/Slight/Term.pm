@@ -113,6 +113,14 @@ class Slight::Term::Pair :isa(Slight::Term) {
     }
 }
 
+class Slight::Term::Triple :isa(Slight::Term) {
+    field $subject   :param :reader;
+    field $predicate :param :reader;
+    field $object    :param :reader;
+
+    method to_string { sprintf '(%s %s %s)' => $subject, $predicate, $object }
+}
+
 class Slight::Term::List :isa(Slight::Term) {}
 class Slight::Term::Nil  :isa(Slight::Term::List) {
     method is_nil { true }

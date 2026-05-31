@@ -13,6 +13,7 @@ class Slight::Context {
 
     field $pid    :param :reader;
     field $alloc  :param :reader;
+    field $memory :param :reader;
 
     field $ticks = 0;
     field @queue :reader;

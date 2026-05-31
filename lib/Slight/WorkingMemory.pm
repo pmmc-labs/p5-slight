@@ -10,10 +10,9 @@ class Slight::WorkingMemory {
     field %forward;
     field %reverse;
 
-    my method index_fact ($fact) {
+    my method index_fact ($s, $p, $o, $fact) {
         # XXX: consider adding all of these?
         # (SPO, SOP, PSO, POS, OPS, OSP)
-        my ($s, $p, $o) = $fact->uncons;
         (($forward{ $s->hash } //= +{})
                 ->{ $p->hash } //= +{})
                 ->{ $o->hash }
@@ -26,11 +25,17 @@ class Slight::WorkingMemory {
     method contains_hash  ($hash) { exists $facts{$hash} }
     method lookup_by_hash ($hash) { return $facts{$hash} }
 
-    method retract ($hash) { delete $facts{$hash} }
-
     method assert ($s, $p, $o) {
-        my $fact = $alloc->List( $s, $p, $o );
-        $facts{ $fact->hash } //= $self->&index_fact( $fact );
+        my $fact = $alloc->Triple( $s, $p, $o );
+        $facts{ $fact->hash } //= $self->&index_fact( $s, $p, $o, $fact );
+    }
+
+    method retract ($s, $p, $o) {
+        return false unless exists $forward{ $s->hash }->{ $p->hash }->{ $o->hash };
+        my $fact = delete $forward{ $s->hash }->{ $p->hash }->{ $o->hash };
+        delete $reverse{ $o->hash }->{ $p->hash }->{ $s->hash };
+        delete $facts{ $fact->hash };
+        return true;
     }
 
     method HOLE { return $alloc->Tag(':_') }

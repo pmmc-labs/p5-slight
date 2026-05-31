@@ -9,6 +9,7 @@ use Slight::Context;
 use Slight::Kontinue;
 use Slight::Parser;
 use Slight::Term;
+use Slight::WorkingMemory;
 
 class Slight::Letter {
     use overload '""' => 'to_string';
@@ -33,7 +34,6 @@ class Slight {
 
     field %mailboxes    :reader; # PID -> Slight::Letter[]
     field @dead_letters :reader; # Slight::Letter[]
-    field %watchers     :reader = ( __ALL__ => +[] );
 
     ADJUST {
         $alloc    //= Slight::Allocator->new;
@@ -44,8 +44,9 @@ class Slight {
 
     method spawn_context ($exprs) {
         my $ctx = Slight::Context->new(
-            pid   => $alloc->PID(++$PID_SEQ),
-            alloc => $alloc,
+            pid    => $alloc->PID(++$PID_SEQ),
+            alloc  => $alloc,
+            memory => Slight::WorkingMemory->new( alloc => $alloc )
         );
         $ctx->enqueue( @$exprs );
         $mailboxes{ $ctx->pid->raw } = +[];
@@ -183,6 +184,7 @@ class Slight {
         my sub concat ($n, $m) { $alloc->Str( $n->raw . $m->raw ) }
 
         my sub eqp ($n, $m) { $n->hash eq $m->hash ? $alloc->True : $alloc->False }
+        my sub nep ($n, $m) { $n->hash ne $m->hash ? $alloc->True : $alloc->False }
 
         my sub atomp ($n) { $n isa Slight::Term::Literal  ? $alloc->True : $alloc->False }
         my sub nilp  ($n) { $n isa Slight::Term::Nil      ? $alloc->True : $alloc->False }
@@ -204,6 +206,8 @@ class Slight {
             say @args;
             return $alloc->Nil;
         }
+
+        # ...
 
         my sub lambda ($E, $p, $b) {
             Slight::Kontinue::Just->new( env => $E )->PUSH( $alloc->Lambda( $p, $b, $E ) )
@@ -239,6 +243,10 @@ class Slight {
 
         # ...
 
+        my sub _exit ($E) {
+            return Slight::Kontinue::Halt->new( env => $E );
+        }
+
         my sub _getpid ($E) {
             return Slight::Kontinue::Getpid->new( env => $E );
         }
@@ -263,6 +271,26 @@ class Slight {
 
         # ...
 
+        my sub _query ($E, $s, $p, $o) {
+            return Slight::Kontinue::MemOp::Query->new(
+                env => $E, subject => $s, predicate => $p, object => $o
+            );
+        }
+
+        my sub _assert ($E, $s, $p, $o) {
+            return Slight::Kontinue::MemOp::Assert->new(
+                env => $E, subject => $s, predicate => $p, object => $o
+            );
+        }
+
+        my sub _retract ($E, $s, $p, $o) {
+            return Slight::Kontinue::MemOp::Retract->new(
+                env => $E, subject => $s, predicate => $p, object => $o
+            );
+        }
+
+        # ...
+
         $alloc->Env(
             # special forms
             'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
@@ -271,6 +299,7 @@ class Slight {
             'let'    => $alloc->Procedure( $alloc->Sym('let'    ), \&let,    is_operative => true ),
             'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
             'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
+            'exit'    => $alloc->Procedure( $alloc->Sym('exit'   ), \&_exit, is_operative => true ),
 
             # concurrency forms
             'fork'    => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,    is_operative => true ),
@@ -278,8 +307,11 @@ class Slight {
             'send'    => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,    is_operative => true ),
             'recv'    => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,    is_operative => true ),
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
-            'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
-            'wait'    => $alloc->Procedure( $alloc->Sym('wait'   ), \&_wait,    is_operative => true ),
+
+            # memory operations
+            'query?'   => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
+            'assert+'  => $alloc->Procedure( $alloc->Sym('assert+'  ), \&_assert,  is_operative => true ),
+            'retract!' => $alloc->Procedure( $alloc->Sym('retract!' ), \&_retract, is_operative => true ),
 
             # i/o helpers
             'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),
@@ -288,6 +320,7 @@ class Slight {
             'atom?'  => $alloc->Procedure( $alloc->Sym('atom?'  ), \&atomp, is_applicative => true ),
             'nil?'   => $alloc->Procedure( $alloc->Sym('nil?'   ), \&nilp,  is_applicative => true ),
             'eq?'    => $alloc->Procedure( $alloc->Sym('eq?'    ), \&eqp,   is_applicative => true ),
+            'ne?'    => $alloc->Procedure( $alloc->Sym('ne?'    ), \&nep,   is_applicative => true ),
 
             # lists
             'list'   => $alloc->Procedure( $alloc->Sym('list'   ), \&list,  is_applicative => true ),

@@ -21,7 +21,7 @@ class Slight::Parser {
         if ($source =~ /\;/) {
             $source =~ s/\;.*\n//g;
         }
-        grep !/^\s*$/, split /(\'\(|\(|\)|\[|\]|"(?:[^"\\]|\\.)*"|\s)/ => $source;
+        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
     }
 
     method parse ($source) {
@@ -46,13 +46,6 @@ class Slight::Parser {
                 when (')') {
                     my $list = pop @stack;
                     push $stack[-1]->@*, $alloc->List( $list->@* );
-                }
-                when ('[') {
-                    push @stack => +[];
-                }
-                when (']') {
-                    my $list = pop @stack;
-                    push $stack[-1]->@*, $alloc->List( $alloc->Sym('list'), $list->@* );
                 }
                 when (/^\"/) {
                     push $stack[-1]->@*, $alloc->Str( substr($token, 1, -1) );

@@ -1,49 +1,13 @@
+<!----------------------------------------------------------------------------->
+# NOTES
+<!----------------------------------------------------------------------------->
 
 ```
-
-(defun dbms (db) (do
-    (let msg (recv))
-    
-    (let op   (car msg))
-    (let args (cdr msg))
-    
-    (if (eq? op 'Query?)
-        (do ...)
-    (if (eq? op 'Assert!))
-        (do ...)
-    (throw '(UNHANDLED msg)))
-    
-    (yield (dbms db))))
-
-
-;; data 
-(db ! '(Assert!  :Bob    :has-first-name  "Robert"      ))
-(db ! '(Assert!  :Bob    :has-last-name   "Smith"       ))
-(db ! '(Assert!  :Bob    :has-age         50            ))
-(db ! '(Assert!  :Alice  :has-first-name  "Allison"     ))
-(db ! '(Assert!  :Alice  :has-last-name   "Chains"      ))
-(db ! '(Assert!  :Alice  :has-age         40            ))
-(db ! '(Assert!  :Chris  :has-first-name  "Christopher" ))
-(db ! '(Assert!  :Chris  :has-last-name   "Cross"       ))
-(db ! '(Assert!  :Chris  :has-age         60            ))
-
-;; relations
-(db ! '(Assert!  :Bob    :knows?       :Alice)) 
-(db ! '(Assert!  :Bob    :knows?       :Chris)) 
-(db ! '(Assert!  :Chris  :knows?       :Bob)) 
-(db ! '(Assert!  :Alice  :knows?       :Bob)) 
-(db ! '(Assert!  :Alice  :knows?       :Chris)) 
-(db ! '(Assert!  :Alice  :works-with?  :Chris)) 
-(db ! '(Assert!  :Chris  :works-with?  :Alice)) 
-
-
-
-(db ! '(Query? :_ :has-first-name "Robert"))
-
-
+(pid ! [:Tag 10]) ;; send
+(pid ? [ s _ o ]) ;; query 
+(pid + [ s p o ]) ;; assert
+(pid - [ s p o ]) ;; reject
 ```
-
-
 
 <!----------------------------------------------------------------------------->
 

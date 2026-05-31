@@ -19,8 +19,8 @@ my $prog = $sys->compile(q[
             (let reply-to  (cdar msg))
             (say (~ (~ (~ "Got " count) (~ " for " operation)) (~ " at " (getpid))))
             (if (eq? operation :Ping)
-                (reply-to ! [:Pong (getpid)])
-                (reply-to ! [:Ping (getpid)]))
+                (send reply-to (list :Pong (getpid)))
+                (send reply-to (list :Ping (getpid))))
             (yield (player (- count 1)))
         )
     )
@@ -29,8 +29,7 @@ my $prog = $sys->compile(q[
 (let player-1 (fork (player 10)))
 (let player-2 (fork (player 10)))
 
-(player-1 ! [:Ping player-2])
-
+(send player-1 (list :Ping player-2))
 
 
 ]);
