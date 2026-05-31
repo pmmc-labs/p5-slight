@@ -35,9 +35,10 @@ my $prog = $sys->compile(q[
     )
 )
 
-(send pid 'HI)
+(send pid 'Hey)
 (send pid 'STOP)
-(send pid 'HEY)
+(send pid 'Yo)
+
 
 ]);
 
