@@ -25,13 +25,25 @@ class Slight::Term {
 }
 
 ## ------------------------------------
-## PIDs
+## PIDs for concurrency
 ## ------------------------------------
 
 class Slight::Term::PID :isa(Slight::Term) {
     field $raw :param :reader;
 
     method to_string { sprintf 'PID[%d]' => $raw }
+}
+
+## ------------------------------------
+## Triples/Facts for working memory
+## ------------------------------------
+
+class Slight::Term::Triple :isa(Slight::Term) {
+    field $subject   :param :reader;
+    field $predicate :param :reader;
+    field $object    :param :reader;
+
+    method to_string { sprintf '(%s %s %s)' => $subject, $predicate, $object }
 }
 
 ## ------------------------------------
@@ -111,14 +123,6 @@ class Slight::Term::Pair :isa(Slight::Term) {
     method to_string {
         sprintf '(%s . %s)' => $first->to_string, $second->to_string;
     }
-}
-
-class Slight::Term::Triple :isa(Slight::Term) {
-    field $subject   :param :reader;
-    field $predicate :param :reader;
-    field $object    :param :reader;
-
-    method to_string { sprintf '(%s %s %s)' => $subject, $predicate, $object }
 }
 
 class Slight::Term::List :isa(Slight::Term) {}

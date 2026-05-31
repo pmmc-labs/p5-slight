@@ -303,7 +303,7 @@ class Slight {
             'let'    => $alloc->Procedure( $alloc->Sym('let'    ), \&let,    is_operative => true ),
             'if'     => $alloc->Procedure( $alloc->Sym('if'     ), \&_if,    is_operative => true ),
             'do'     => $alloc->Procedure( $alloc->Sym('do'     ), \&_do,    is_operative => true ),
-            'exit'    => $alloc->Procedure( $alloc->Sym('exit'   ), \&_exit, is_operative => true ),
+            'exit'   => $alloc->Procedure( $alloc->Sym('exit'   ), \&_exit, is_operative => true ),
 
             # concurrency forms
             'fork'    => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,    is_operative => true ),
@@ -313,13 +313,13 @@ class Slight {
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
 
             # memory operations
-            'query?'   => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
-            'assert+'  => $alloc->Procedure( $alloc->Sym('assert+'  ), \&_assert,  is_operative => true ),
-            'retract!' => $alloc->Procedure( $alloc->Sym('retract!' ), \&_retract, is_operative => true ),
-
-            '.subject'   => $alloc->Procedure( $alloc->Sym('.subject'  ),   \&_subject,   is_applicative => true ),
-            '.predicate' => $alloc->Procedure( $alloc->Sym('.predicate'  ), \&_predicate, is_applicative => true ),
-            '.object'    => $alloc->Procedure( $alloc->Sym('.object'  ),    \&_object,    is_applicative => true ),
+            'query?'     => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
+            'assert+'    => $alloc->Procedure( $alloc->Sym('assert+'  ), \&_assert,  is_operative => true ),
+            'retract!'   => $alloc->Procedure( $alloc->Sym('retract!' ), \&_retract, is_operative => true ),
+            # memory fact operations
+            '.subject'   => $alloc->Procedure( $alloc->Sym('.subject'   ), \&_subject,   is_applicative => true ),
+            '.predicate' => $alloc->Procedure( $alloc->Sym('.predicate' ), \&_predicate, is_applicative => true ),
+            '.object'    => $alloc->Procedure( $alloc->Sym('.object'    ), \&_object,    is_applicative => true ),
 
             # i/o helpers
             'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),
