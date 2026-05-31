@@ -42,6 +42,24 @@ class Slight {
 
     our $PID_SEQ = 0;
 
+    method lookup_pid ($pid) { $lookup{ $pid->raw } }
+
+    method enqueue_message ($from, $to, $msg) {
+        push $mailboxes{ $to->raw }->@* => Slight::Letter->new(
+            from => $from, to => $to, msg => $msg
+        )
+    }
+
+    method dequeue_message ($for) {
+        shift $mailboxes{ $for->raw }->@*;
+    }
+
+    method discard_message ($from, $to, $msg) {
+        push @dead_letters => Slight::Letter->new(
+            from => $from, to => $to, msg => $msg
+        )
+    }
+
     method spawn_context ($exprs) {
         my $ctx = Slight::Context->new(
             pid    => $alloc->PID(++$PID_SEQ),
@@ -90,64 +108,7 @@ class Slight {
         while (@running) {
             my $ctx  = shift @running;
             my $kont = $ctx->run_until_host;
-            given (blessed $kont) {
-                when ('Slight::Kontinue::Error') {
-                    DEBUG && say ">> SYS.ERROR in ${ctx}";
-                    $self->halt($ctx);
-                }
-                when ('Slight::Kontinue::Halt') {
-                    DEBUG && say ">> SYS.HALT in ${ctx}";
-                    $self->halt($ctx);
-                }
-                when ('Slight::Kontinue::Yield') {
-                    DEBUG && say ">> SYS.YIELD in ${ctx}";
-                    $self->kontinue( $ctx );
-                }
-                when ('Slight::Kontinue::Fork') {
-                    DEBUG && say ">> SYS.FORK in ${ctx}";
-                    my $child = $self->spawn_context( $self->assemble( $kont->env, $kont->expr ) );
-                    $ctx->enqueue( Slight::Kontinue::Just->new( env => $kont->env )->PUSH( $child->pid ) );
-                    $self->kontinue( $ctx );
-                }
-                when ('Slight::Kontinue::Send') {
-                    DEBUG && say ">> SYS.SEND in ${ctx}";
-                    my ($pid, $msg) = $kont->stack;
-
-                    my $letter = Slight::Letter->new( from => $ctx->pid, to => $pid, msg => $msg );
-                    if (my $recvr = $lookup{ $pid->raw }) {
-                        DEBUG && say ">> -- SENDING LETTER ${letter} in ${ctx}";
-                        push $mailboxes{ $pid->raw }->@* => $letter;
-                        $self->unblock( $recvr );
-                    } else {
-                        DEBUG && say ">> -- DEAD LETTER ${letter} in ${ctx}";
-                        push @dead_letters => $letter;
-                    }
-                    $ctx->enqueue( Slight::Kontinue::Just->new( env => $kont->env )->PUSH( $alloc->Nil ) );
-                    $self->kontinue( $ctx );
-                }
-                when ('Slight::Kontinue::Recv') {
-                    DEBUG && say ">> SYS.RECV in ${ctx}";
-                    my $mail = $mailboxes{ $ctx->pid->raw };
-                    if (@$mail) {
-                        my $letter = shift @$mail;
-                        DEBUG && say ">> -- WEVE GOT MAIL! ${letter} in ${ctx}";
-                        $ctx->enqueue( Slight::Kontinue::Just->new( env => $kont->env )->PUSH( $letter->msg ) );
-                        $self->kontinue( $ctx );
-                    } else {
-                        DEBUG && say ">> -- NO MAIL TODAY! in ${ctx}";
-                        $ctx->enqueue( $kont );
-                        $self->block( $ctx );
-                    }
-                }
-                when ('Slight::Kontinue::Getpid') {
-                    DEBUG && say ">> SYS.GETPID in ${ctx}";
-                    $ctx->enqueue( Slight::Kontinue::Just->new( env => $kont->env )->PUSH( $ctx->pid ) );
-                    $self->kontinue( $ctx );
-                }
-                default {
-                    $self->kontinue( $ctx );
-                }
-            }
+            $kont->HANDLE( $self, $ctx );
         }
         return @halted;
     }

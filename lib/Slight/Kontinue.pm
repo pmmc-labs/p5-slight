@@ -9,8 +9,6 @@ class Slight::Kontinue {
     field $env   :param :reader;
     field @stack :reader;
 
-    method STEP ($ctx) { ... }
-
     method THREAD ($e) {
         $env = $e;
         $self;
@@ -29,30 +27,102 @@ class Slight::Kontinue {
     }
 }
 
-# Host Kontinues
+## -----------------------------------------------------------------------------
+## HOST Kontinues
+## -----------------------------------------------------------------------------
 
-class Slight::Kontinue::HOST :isa(Slight::Kontinue) {}
+class Slight::Kontinue::HOST :isa(Slight::Kontinue) {
+    method HANDLE ($host, $ctx) { ... }
+}
 
 # basic halt/error
-class Slight::Kontinue::Halt  :isa(Slight::Kontinue::HOST) {}
+class Slight::Kontinue::Halt :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.HALT in ${ctx}";
+        $host->halt($ctx);
+    }
+}
+
 class Slight::Kontinue::Error :isa(Slight::Kontinue::HOST) {
     field $error :param :reader;
+
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.ERROR in ${ctx}";
+        $host->halt($ctx);
+    }
 }
 
 # concurrency
-class Slight::Kontinue::Concurrency :isa(Slight::Kontinue::HOST) {}
-class Slight::Kontinue::Yield       :isa(Slight::Kontinue::Concurrency) {}
-class Slight::Kontinue::Recv        :isa(Slight::Kontinue::Concurrency) {}
-class Slight::Kontinue::Send        :isa(Slight::Kontinue::Concurrency) {}
-class Slight::Kontinue::Getpid      :isa(Slight::Kontinue::Concurrency) {}
-class Slight::Kontinue::Fork        :isa(Slight::Kontinue::Concurrency) {
-    field $expr :param :reader;
+class Slight::Kontinue::Yield :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.YIELD in ${ctx}";
+        $host->kontinue( $ctx );
+    }
 }
 
+class Slight::Kontinue::Fork :isa(Slight::Kontinue::HOST) {
+    field $expr :param :reader;
+
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.FORK in ${ctx}";
+        my $child = $host->spawn_context( $host->assemble( $self->env, $self->expr ) );
+        $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $child->pid ) );
+        $host->kontinue( $ctx );
+    }
+}
+
+class Slight::Kontinue::Getpid :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.GETPID in ${ctx}";
+        $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $ctx->pid ) );
+        $host->kontinue( $ctx );
+    }
+}
+
+class Slight::Kontinue::Send :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.SEND in ${ctx}";
+        my ($pid, $msg) = $self->stack;
+        if (my $recvr = $host->lookup_pid( $pid )) {
+            $host->DEBUG && say ">> -- SENDING LETTER ${msg} to ${pid} in ${ctx}";
+            $host->enqueue_message( $ctx->pid, $pid, $msg );
+            $host->unblock( $recvr );
+        } else {
+            $host->DEBUG && say ">> -- DEAD LETTER ${msg} to ${pid} in ${ctx}";
+            $host->discard_message( $ctx->pid, $pid, $msg );
+        }
+        $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
+        $host->kontinue( $ctx );
+    }
+}
+
+class Slight::Kontinue::Recv :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.RECV in ${ctx}";
+        if (my $letter = $host->dequeue_message( $ctx->pid )) {
+            $host->DEBUG && say ">> -- WEVE GOT MAIL! ${letter} in ${ctx}";
+            $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $letter->msg ) );
+            $host->kontinue( $ctx );
+        } else {
+            $host->DEBUG && say ">> -- NO MAIL TODAY! in ${ctx}";
+            $ctx->enqueue( $self );
+            $host->block( $ctx );
+        }
+
+    }
+}
+
+## -----------------------------------------------------------------------------
+## STEP Kontinues
+## -----------------------------------------------------------------------------
+
+class Slight::Kontinue::STEP :isa(Slight::Kontinue) {
+    method STEP ($ctx) { ... }
+}
 
 # Memory operations
 
-class Slight::Kontinue::MemOp :isa(Slight::Kontinue) {}
+class Slight::Kontinue::MemOp :isa(Slight::Kontinue::STEP) {}
 
 class Slight::Kontinue::MemOp::Assert :isa(Slight::Kontinue::MemOp) {
     method STEP ($ctx) {
@@ -85,19 +155,19 @@ class Slight::Kontinue::MemOp::Retract :isa(Slight::Kontinue::MemOp) {
 
 # Other Kontinues
 
-class Slight::Kontinue::Just :isa(Slight::Kontinue) {
+class Slight::Kontinue::Just :isa(Slight::Kontinue::STEP) {
     method STEP ($ctx) {
         $ctx->thread_computation( $self->env, $self->stack );
     }
 }
 
-class Slight::Kontinue::Drop :isa(Slight::Kontinue) {
+class Slight::Kontinue::Drop :isa(Slight::Kontinue::STEP) {
     method STEP ($ctx) {
         $ctx->thread_computation( $self->env );
     }
 }
 
-class Slight::Kontinue::Eval::Expr :isa(Slight::Kontinue) {
+class Slight::Kontinue::Eval::Expr :isa(Slight::Kontinue::STEP) {
     field $expr :param :reader;
 
     method STEP ($ctx) {
@@ -123,7 +193,7 @@ class Slight::Kontinue::Eval::Expr :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Eval::Head :isa(Slight::Kontinue) {
+class Slight::Kontinue::Eval::Head :isa(Slight::Kontinue::STEP) {
     field $head :param :reader;
     field $rest :param :reader;
 
@@ -133,7 +203,7 @@ class Slight::Kontinue::Eval::Head :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Eval::Rest :isa(Slight::Kontinue) {
+class Slight::Kontinue::Eval::Rest :isa(Slight::Kontinue::STEP) {
     field $rest :param :reader;
 
     method STEP ($ctx) {
@@ -146,7 +216,7 @@ class Slight::Kontinue::Eval::Rest :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue) {
+class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue::STEP) {
     field $args :param :reader;
 
     method STEP ($ctx) {
@@ -161,7 +231,7 @@ class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Apply::Call :isa(Slight::Kontinue) {
+class Slight::Kontinue::Apply::Call :isa(Slight::Kontinue::STEP) {
     field $call :param :reader;
 
     method STEP ($ctx) {
@@ -198,7 +268,7 @@ class Slight::Kontinue::Apply::Call :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Bind :isa(Slight::Kontinue) {
+class Slight::Kontinue::Bind :isa(Slight::Kontinue::STEP) {
     field $name :param :reader;
 
     method STEP ($ctx) {
@@ -207,7 +277,7 @@ class Slight::Kontinue::Bind :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Cond :isa(Slight::Kontinue) {
+class Slight::Kontinue::Cond :isa(Slight::Kontinue::STEP) {
     field $if_true   :param :reader;
     field $if_false  :param :reader;
 
@@ -221,13 +291,13 @@ class Slight::Kontinue::Cond :isa(Slight::Kontinue) {
     }
 }
 
-class Slight::Kontinue::Scope::Enter :isa(Slight::Kontinue) {
+class Slight::Kontinue::Scope::Enter :isa(Slight::Kontinue::STEP) {
     method STEP ($ctx) {
         return ();
     }
 }
 
-class Slight::Kontinue::Scope::Leave :isa(Slight::Kontinue) {
+class Slight::Kontinue::Scope::Leave :isa(Slight::Kontinue::STEP) {
     field $orig_env :reader;
 
     ADJUST { $orig_env = $self->env }
