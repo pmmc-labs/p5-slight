@@ -3,10 +3,36 @@
 <!----------------------------------------------------------------------------->
 
 ```
-(pid ! [:Tag 10]) ;; send
-(pid ? [ s _ o ]) ;; query 
-(pid + [ s p o ]) ;; assert
-(pid - [ s p o ]) ;; reject
+;; local commits inside an actor
+;; would look like this and commit
+;; to the local working memory
+(commit :message "Adding Bob and Chris stuff"
+    (patch
+        (assert! Bob   :knows    Alice )
+        (assert! Bob   :knows    Chris )
+        (assert! Chris :knows    Bob   )
+        (assert! Chris :works-w/ Alice )
+        (assert! Chris :knows    Alice )))
+
+
+;; local queries
+
+(let mutuals
+    (where? (x)
+        (and (x :knows Alice)
+             (x :knows Chris))))
+
+;; patches from other actors are sent
+;; as merge requests messages
+(send PID (merge-request
+    :author     (getpid)
+    :description "Adding Alice stuff"
+    (patch
+        (assert! Alice :knows    Bob   )
+        (assert! Alice :knows    Chris )
+        (assert! Alice :works-w/ Chris )
+        (retract Chris :knows    Bob   ))))
+
 ```
 
 <!----------------------------------------------------------------------------->

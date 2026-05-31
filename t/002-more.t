@@ -10,27 +10,34 @@ use Slight::WorkingMemory;
 my $sys  = Slight->new;
 my $prog = $sys->compile(q[
 
-(let Bob   '(Robert  Smith))
-(let Alice '(Allison Chains))
-(let Chris '(Chris   Kringle))
+(let pid
+    (fork
+        (do
+            (assert+ (getpid) :is 'STARTED)
 
-(assert+ Bob   :knows    Alice )
-(assert+ Bob   :knows    Chris )
-(assert+ Chris :knows    Bob   )
-(assert+ Chris :works-w/ Alice )
-(assert+ Chris :knows    Alice )
-(assert+ Alice :knows    Bob   )
-(assert+ Alice :knows    Chris )
-(assert+ Alice :works-w/ Chris )
+            (defun loop () (do
+                (let msg (recv))
+                (if (eq? msg 'STOP)
+                    (do
+                        (retract! (getpid) :is 'STARTED)
+                        (assert+  (getpid) :is 'STOPPED)
+                        (say "... STOPPING")
+                        (exit))
+                    (do
+                        (let q (query? (getpid) :is 'STARTED))
+                        (if (nil? q)
+                            (say "NOT STARTED")
+                            (say "STARTED"))))
+                (yield (loop))))
 
-(say (query? Alice :_       Chris ))
-(say (query? :_    :works-w/ Alice ))
-(say (query? Bob   :_       :_    ))
-(say (query? :_    :_       Chris ))
+            (loop)
+        )
+    )
+)
 
-(say (retract! Alice :knows Chris ))
-
-(say (query? :_ :_ Chris ))
+(send pid 'HI)
+(send pid 'STOP)
+(send pid 'HEY)
 
 ]);
 
@@ -64,5 +71,3 @@ say 'UNDELIVERED!';
 my %mb = $sys->mailboxes;
 say "  - $_" foreach map $_->@*, values %mb;
 say '=' x 40;
-
-__END__

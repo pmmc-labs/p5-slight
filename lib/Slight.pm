@@ -272,21 +272,21 @@ class Slight {
         # ...
 
         my sub _query ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Query->new(
-                env => $E, subject => $s, predicate => $p, object => $o
-            );
+            return Slight::Kontinue::MemOp::Query->new( env => $E ),
+                    Slight::Kontinue::Eval::Rest->new( env => $E,
+                        rest => $alloc->List( $s, $p, $o ) );
         }
 
         my sub _assert ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Assert->new(
-                env => $E, subject => $s, predicate => $p, object => $o
-            );
+            return Slight::Kontinue::MemOp::Assert->new( env => $E ),
+                    Slight::Kontinue::Eval::Rest->new( env => $E,
+                        rest => $alloc->List( $s, $p, $o ) );
         }
 
         my sub _retract ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Retract->new(
-                env => $E, subject => $s, predicate => $p, object => $o
-            );
+            return Slight::Kontinue::MemOp::Retract->new( env => $E ),
+                    Slight::Kontinue::Eval::Rest->new( env => $E,
+                        rest => $alloc->List( $s, $p, $o ) );
         }
 
         # ...
