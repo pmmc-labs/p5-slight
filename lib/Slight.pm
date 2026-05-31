@@ -289,6 +289,10 @@ class Slight {
                         rest => $alloc->List( $s, $p, $o ) );
         }
 
+        my sub _subject   ($t) { $t->subject   }
+        my sub _predicate ($t) { $t->predicate }
+        my sub _object    ($t) { $t->object    }
+
         # ...
 
         $alloc->Env(
@@ -312,6 +316,10 @@ class Slight {
             'query?'   => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
             'assert+'  => $alloc->Procedure( $alloc->Sym('assert+'  ), \&_assert,  is_operative => true ),
             'retract!' => $alloc->Procedure( $alloc->Sym('retract!' ), \&_retract, is_operative => true ),
+
+            '.subject'   => $alloc->Procedure( $alloc->Sym('.subject'  ),   \&_subject,   is_applicative => true ),
+            '.predicate' => $alloc->Procedure( $alloc->Sym('.predicate'  ), \&_predicate, is_applicative => true ),
+            '.object'    => $alloc->Procedure( $alloc->Sym('.object'  ),    \&_object,    is_applicative => true ),
 
             # i/o helpers
             'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),

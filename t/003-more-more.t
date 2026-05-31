@@ -10,35 +10,27 @@ use Slight::WorkingMemory;
 my $sys  = Slight->new;
 my $prog = $sys->compile(q[
 
-(let pid
-    (fork
-        (do
-            (assert+ (getpid) :is 'STARTED)
+(defun set! (k op v)
+    (do
+        (let result (query? k := :_))
+        (if (nil? result) () (retract! k := (.object (car result))))
+        (assert+ k op v)))
 
-            (defun loop () (do
-                (let msg (recv))
-                (if (eq? msg 'STOP)
-                    (do
-                        (retract! (getpid) :is 'STARTED)
-                        (assert+  (getpid) :is 'STOPPED)
-                        (say "... STOPPING")
-                        (exit))
-                    (do
-                        (let q (query? (getpid) :is 'STARTED))
-                        (if (nil? q)
-                            (say "NOT STARTED")
-                            (say "STARTED"))))
-                (yield (loop))))
+(defun get! (k)
+    (do
+        (let result (query? k := :_))
+        (if (nil? result) () (.object (car result)))))
 
-            (loop)
-        )
-    )
-)
 
-(send pid 'Hey)
-(send pid 'STOP)
-(send pid 'Yo) ;; <- dead letter
+(set! 'x := 10)
+(say (get! 'x))
+(set! 'x := 20)
+(say (get! 'x))
+(say (get! 'y))
+(set! 'y := 10)
+(say (get! 'y))
 
+(say (+ (get! 'y) (get! 'x)))
 
 ]);
 
