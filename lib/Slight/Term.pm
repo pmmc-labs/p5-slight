@@ -22,6 +22,8 @@ class Slight::Term {
     sub hash_of ($class, @args) {
         Digest::MD5::md5_hex(join ':' => $class, @args);
     }
+
+    method stringify { $self->to_string }
 }
 
 ## ------------------------------------
@@ -105,6 +107,7 @@ class Slight::Term::Literal :isa(Slight::Term) {
 class Slight::Term::Num :isa(Slight::Term::Literal) {}
 class Slight::Term::Str :isa(Slight::Term::Literal) {
     method to_string { sprintf '"%s"' => $self->raw }
+    method stringify { $self->raw }
 }
 class Slight::Term::Bool :isa(Slight::Term::Literal) {
     method is_true  {  $self->raw }

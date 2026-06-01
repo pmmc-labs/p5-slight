@@ -45,7 +45,9 @@ class Slight::Parser {
                 }
                 when (')') {
                     my $list = pop @stack;
-                    push $stack[-1]->@*, $alloc->List( $list->@* );
+                    push $stack[-1]->@*, (scalar $list->@* > 0)
+                        ? $alloc->List( $list->@* )
+                        : $alloc->Nil;
                 }
                 when (/^\"/) {
                     push $stack[-1]->@*, $alloc->Str( substr($token, 1, -1) );

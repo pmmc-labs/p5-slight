@@ -9,6 +9,7 @@ use Slight::Context;
 use Slight::Kontinue;
 use Slight::Parser;
 use Slight::Term;
+use Slight::Timers;
 use Slight::WorkingMemory;
 
 class Slight::Letter {
@@ -26,6 +27,7 @@ class Slight {
 
     field $alloc     :reader :param = undef;
     field $root_env  :reader :param = undef;
+    field $timers    :reader :param = undef;
 
     field @running   :reader;
     field @blocked   :reader;
@@ -37,6 +39,7 @@ class Slight {
 
     ADJUST {
         $alloc    //= Slight::Allocator->new;
+        $timers   //= Slight::Timers->new;
         $root_env //= $self->initialize_root_environment;
     }
 
@@ -58,6 +61,34 @@ class Slight {
         push @dead_letters => Slight::Letter->new(
             from => $from, to => $to, msg => $msg
         )
+    }
+
+    method run {
+        while (true) {
+            while (@running) {
+                $timers->tick( $self );
+                my $ctx  = shift @running;
+                my $kont = $ctx->run_until_host;
+                $kont->HANDLE( $self, $ctx );
+            }
+            if (my $wait = $timers->should_wait) {
+                $timers->wait( $wait );
+                $timers->tick( $self );
+            } else {
+                last;
+            }
+        }
+        return @halted;
+    }
+
+    method schedule_timer ($timeout, $ctx) {
+        DEBUG && say "schedule( $timeout, $ctx )";
+        my $timer = Slight::Timers::Timer->new(
+            timeout  => $timeout,
+            callback => $ctx,
+        );
+        $timers->schedule_timer($timer);
+        return $timer;
     }
 
     method spawn_context ($exprs) {
@@ -104,15 +135,6 @@ class Slight {
         delete $lookup{ $ctx->pid->raw };
     }
 
-    method run {
-        while (@running) {
-            my $ctx  = shift @running;
-            my $kont = $ctx->run_until_host;
-            $kont->HANDLE( $self, $ctx );
-        }
-        return @halted;
-    }
-
     method compile ($src) {
         my @exprs = Slight::Parser->new( alloc => $alloc )->parse( $src );
         return $self->assemble( $root_env, @exprs );
@@ -142,7 +164,9 @@ class Slight {
         my sub num_ge ($n, $m) { $n->raw >= $m->raw ? $alloc->True : $alloc->False }
         my sub num_le ($n, $m) { $n->raw <= $m->raw ? $alloc->True : $alloc->False }
 
-        my sub concat ($n, $m) { $alloc->Str( $n->raw . $m->raw ) }
+        my sub concat (@args) {
+            $alloc->Str( join '' => map $_->stringify, @args )
+        }
 
         my sub eqp ($n, $m) { $n->hash eq $m->hash ? $alloc->True : $alloc->False }
         my sub nep ($n, $m) { $n->hash ne $m->hash ? $alloc->True : $alloc->False }
@@ -164,7 +188,7 @@ class Slight {
         my sub list (@items) { $alloc->List( @items ) }
 
         my sub _say (@args) {
-            say @args;
+            say map $_->stringify, @args;
             return $alloc->Nil;
         }
 
@@ -203,6 +227,11 @@ class Slight {
         }
 
         # ...
+
+        my sub _sleep ($E, $timeout) {
+            return Slight::Kontinue::Sleep->new( env => $E ),
+                    Slight::Kontinue::Eval::Expr->new( env => $E, expr => $timeout );
+        }
 
         my sub _exit ($E) {
             return Slight::Kontinue::Halt->new( env => $E );
@@ -267,6 +296,7 @@ class Slight {
             'exit'   => $alloc->Procedure( $alloc->Sym('exit'   ), \&_exit, is_operative => true ),
 
             # concurrency forms
+            'sleep'   => $alloc->Procedure( $alloc->Sym('sleep'  ), \&_sleep,   is_operative => true ),
             'fork'    => $alloc->Procedure( $alloc->Sym('fork'   ), \&_fork,    is_operative => true ),
             'yield'   => $alloc->Procedure( $alloc->Sym('yield'  ), \&yield,    is_operative => true ),
             'send'    => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,    is_operative => true ),

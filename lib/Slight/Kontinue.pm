@@ -60,6 +60,14 @@ class Slight::Kontinue::Yield :isa(Slight::Kontinue::HOST) {
     }
 }
 
+class Slight::Kontinue::Sleep :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        my ($timeout) = $self->stack;
+        $host->schedule_timer( $timeout->raw, $ctx );
+        $host->block( $ctx );
+    }
+}
+
 class Slight::Kontinue::Fork :isa(Slight::Kontinue::HOST) {
     field $expr :param :reader;
 
@@ -191,6 +199,8 @@ class Slight::Kontinue::Eval::Expr :isa(Slight::Kontinue::STEP) {
             }
         }
     }
+
+    method to_string { sprintf '%s :expr %s' => $self->SUPER::to_string, $expr }
 }
 
 class Slight::Kontinue::Eval::Head :isa(Slight::Kontinue::STEP) {
@@ -201,6 +211,8 @@ class Slight::Kontinue::Eval::Head :isa(Slight::Kontinue::STEP) {
         return Slight::Kontinue::Apply::Expr->new( env => $self->env, args => $rest ),
                 Slight::Kontinue::Eval::Expr->new( env => $self->env, expr => $head );
     }
+
+    method to_string { sprintf '%s :head %s :rest %s' => $self->SUPER::to_string, $head, $rest }
 }
 
 class Slight::Kontinue::Eval::Rest :isa(Slight::Kontinue::STEP) {
@@ -214,6 +226,8 @@ class Slight::Kontinue::Eval::Rest :isa(Slight::Kontinue::STEP) {
                     Slight::Kontinue::Eval::Expr->new( env => $self->env, expr => $rest->head );
         }
     }
+
+    method to_string { sprintf '%s :rest %s' => $self->SUPER::to_string, $rest }
 }
 
 class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue::STEP) {
@@ -229,6 +243,8 @@ class Slight::Kontinue::Apply::Expr :isa(Slight::Kontinue::STEP) {
                               ->PUSH( $self->env, $self->args->is_nil ? () : $self->args->uncons );
         }
     }
+
+    method to_string { sprintf '%s :args %s' => $self->SUPER::to_string, $args }
 }
 
 class Slight::Kontinue::Apply::Call :isa(Slight::Kontinue::STEP) {
@@ -266,6 +282,8 @@ class Slight::Kontinue::Apply::Call :isa(Slight::Kontinue::STEP) {
             }
         }
     }
+
+    method to_string { sprintf '%s :call %s' => $self->SUPER::to_string, $call }
 }
 
 class Slight::Kontinue::Bind :isa(Slight::Kontinue::STEP) {
@@ -275,6 +293,8 @@ class Slight::Kontinue::Bind :isa(Slight::Kontinue::STEP) {
         my ($value) = $self->stack;
         return Slight::Kontinue::Drop->new( env => $ctx->bind_variable( $self->env, $name, $value ) )
     }
+
+    method to_string { sprintf '%s :name %s' => $self->SUPER::to_string, $name }
 }
 
 class Slight::Kontinue::Cond :isa(Slight::Kontinue::STEP) {
@@ -289,6 +309,8 @@ class Slight::Kontinue::Cond :isa(Slight::Kontinue::STEP) {
             return Slight::Kontinue::Eval::Expr->new( env => $self->env, expr => $if_false );
         }
     }
+
+    method to_string { sprintf '%s :if-true %s :if-false %s' => $self->SUPER::to_string, $if_true, $if_false }
 }
 
 class Slight::Kontinue::Scope::Enter :isa(Slight::Kontinue::STEP) {
@@ -305,4 +327,6 @@ class Slight::Kontinue::Scope::Leave :isa(Slight::Kontinue::STEP) {
     method STEP ($ctx) {
         $ctx->thread_computation( $orig_env, $self->stack );
     }
+
+    method to_string { sprintf '%s :orig-env %s' => $self->SUPER::to_string, substr($orig_env->hash, 0, 6) }
 }

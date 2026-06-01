@@ -17,7 +17,7 @@ my $prog = $sys->compile(q[
             (let msg (recv))
             (let operation (car  msg))
             (let reply-to  (cdar msg))
-            (say (~ (~ (~ "Got " count) (~ " for " operation)) (~ " at " (getpid))))
+            (say (~ "Got " count " for " operation " at " (getpid)))
             (if (eq? operation :Ping)
                 (send reply-to (list :Pong (getpid)))
                 (send reply-to (list :Ping (getpid))))

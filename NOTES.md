@@ -2,6 +2,23 @@
 # NOTES
 <!----------------------------------------------------------------------------->
 
+## make a prelude ...
+
+```
+(defun map (f l)
+    (if (nil? l)
+        ()
+        (list (f (car l)) (map f (cdr l)))))
+
+(defun length (l)
+    (if (nil? l) 0
+        (+ 1 (length (cdr l)))))
+
+
+```
+
+# commit ideas
+
 ```
 ;; local commits inside an actor
 ;; would look like this and commit
