@@ -132,12 +132,12 @@ class Slight::Timers {
         return @t;
     }
 
-    method execute_timer ($timer, $host) {
+    method execute_timer ($timer) {
         while ( $timer->[1]->@* ) {
             my $t = shift $timer->[1]->@*;
             next if $t->cancelled; # skip if the timer has been cancelled
             try {
-                $host->unblock( $t->callback )
+                $t->callback->()
             } catch ($e) {
                 chomp $e;
                 warn "Timer callback failed ($timer) because: $e" if DEBUG;
@@ -145,7 +145,7 @@ class Slight::Timers {
         }
     }
 
-    method tick ($host) {
+    method tick {
         return unless @timers;
 
         say "begin:timers" if DEBUG;
@@ -156,7 +156,7 @@ class Slight::Timers {
         say "Got timers to check ... ".scalar @timers if DEBUG;
         foreach my $timer ( @timers_to_run ) {
             say "Running timers ($time) ..." if DEBUG;
-            $self->execute_timer( $timer, $host );
+            $self->execute_timer( $timer );
         }
 
         say "end:timers"  if DEBUG;

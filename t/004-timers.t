@@ -27,14 +27,13 @@ my $prog = $sys->compile(q[
     )
 )
 
-(fork (yield (bouncer 1 5)))
-(fork (yield (bouncer 1 3)))
-
 (say "SO IT BEGINS")
+(fork (yield (bouncer 1 5)))
 (sleep 3)
+(fork (yield (bouncer 1 3)))
 (say "GETTING THERE")
-(sleep 4)
-(say "AND SO IT ENDS")
+(sleep 5)
+(say "WHA!!!")
 
 ]);
 

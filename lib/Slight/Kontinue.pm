@@ -63,8 +63,24 @@ class Slight::Kontinue::Yield :isa(Slight::Kontinue::HOST) {
 class Slight::Kontinue::Sleep :isa(Slight::Kontinue::HOST) {
     method HANDLE ($host, $ctx) {
         my ($timeout) = $self->stack;
-        $host->schedule_timer( $timeout->raw, $ctx );
+        $host->schedule_timer( $timeout->raw, sub { $host->unblock( $ctx ) });
+        $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
         $host->block( $ctx );
+    }
+}
+
+class Slight::Kontinue::Timeout :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        my ($timeout, $callback) = $self->stack;
+        $host->schedule_timer( $timeout->raw, sub {
+            $ctx->enqueue(
+                Slight::Kontinue::Drop->new( env => $self->env ),
+                Slight::Kontinue::Apply::Call->new( env => $self->env, call => $callback )
+            );
+            $host->unblock( $ctx );
+        });
+        $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
+        $host->kontinue( $ctx );
     }
 }
 

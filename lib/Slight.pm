@@ -113,14 +113,6 @@ class Slight {
         push @blocked => $ctx;
     }
 
-    method unblock ($ctx) {
-        # return if not blocked
-        return unless grep { $ctx->pid->raw == $_->pid->raw } @blocked;
-        DEBUG && say ">> !! UNBLOCKING ${ctx}";
-        @blocked = grep { $ctx->pid->raw != $_->pid->raw } @blocked;
-        $self->kontinue($ctx);
-    }
-
     method kontinue ($ctx) {
         # return if already running
         return if grep { $ctx->pid->raw == $_->pid->raw } @running;
@@ -134,6 +126,12 @@ class Slight {
         DEBUG && say ">> !! HALTING ${ctx}";
         push @halted => $ctx;
         delete $lookup{ $ctx->pid->raw };
+    }
+
+    method unblock ($ctx) {
+        DEBUG && say ">> !! UNBLOCKING ${ctx}";
+        @blocked = grep { $ctx->pid->raw != $_->pid->raw } @blocked;
+        $self->kontinue($ctx);
     }
 
     method compile ($src) {
@@ -234,6 +232,12 @@ class Slight {
                     Slight::Kontinue::Eval::Expr->new( env => $E, expr => $timeout );
         }
 
+        my sub _set_timeout ($E, $timeout, $callback) {
+            return Slight::Kontinue::Timeout->new( env => $E ),
+                    Slight::Kontinue::Eval::Rest->new( env => $E,
+                        rest => $alloc->List( $timeout, $callback ) );
+        }
+
         my sub _exit ($E) {
             return Slight::Kontinue::Halt->new( env => $E );
         }
@@ -303,6 +307,8 @@ class Slight {
             'send'    => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,    is_operative => true ),
             'recv'    => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,    is_operative => true ),
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
+
+            'set-timeout' => $alloc->Procedure( $alloc->Sym('set-timeout'), \&_set_timeout, is_operative => true ),
 
             # memory operations
             'query?'     => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
