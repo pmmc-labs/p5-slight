@@ -27,9 +27,14 @@ my $prog = $sys->compile(q[
     )
 )
 
-(say "SO IT BEGINS")
 (fork (yield (bouncer 1 5)))
 (fork (yield (bouncer 1 3)))
+
+(say "SO IT BEGINS")
+(sleep 3)
+(say "GETTING THERE")
+(sleep 4)
+(say "AND SO IT ENDS")
 
 ]);
 

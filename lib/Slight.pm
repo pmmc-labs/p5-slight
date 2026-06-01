@@ -13,6 +13,7 @@ use Slight::Timers;
 use Slight::WorkingMemory;
 
 class Slight::Letter {
+    # XXX - consider making this a proper Term
     use overload '""' => 'to_string';
     field $from :reader :param;
     field $to   :reader :param;
