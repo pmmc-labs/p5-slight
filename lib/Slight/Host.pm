@@ -23,24 +23,57 @@ class Slight::Host::Letter {
     }
 }
 
+class Slight::Host::RunQueue {
+    use constant READY   => 'READY';
+    use constant BLOCKED => 'BLOCKED';
+    use constant WAITING => 'WAITING';
+    use constant HALTED  => 'HALTED';
+
+    field %status;
+    field %registry;
+
+    method lookup   ($pid) { $registry{$pid->raw} }
+    method register ($ctx) { $registry{$ctx->pid->raw} = $ctx }
+
+    # ...
+
+    method running { grep $self->is_ready($_),   values %registry }
+    method waiting { grep $self->is_waiting($_), values %registry }
+    method blocked { grep $self->is_blocked($_), values %registry }
+    method halted  { grep $self->is_halted($_),  values %registry }
+
+    # ...
+
+    method set_to_ready   ($ctx) { $status{$ctx->pid->raw} = READY }
+    method set_to_blocked ($ctx) { $status{$ctx->pid->raw} = BLOCKED }
+    method set_to_waiting ($ctx) { $status{$ctx->pid->raw} = WAITING }
+    method set_to_halted  ($ctx) { $status{$ctx->pid->raw} = HALTED  }
+
+    method is_ready   ($ctx) { $status{$ctx->pid->raw} eq READY   }
+    method is_blocked ($ctx) { $status{$ctx->pid->raw} eq BLOCKED }
+    method is_waiting ($ctx) { $status{$ctx->pid->raw} eq WAITING }
+    method is_halted  ($ctx) { $status{$ctx->pid->raw} eq HALTED  }
+}
+
 class Slight::Host {
     use constant DEBUG => !!$ENV{DEBUG_HOST};
 
     field $alloc     :reader :param;
     field $root_env  :reader :param;
     field $timers    :reader :param;
-
-    field @running   :reader;
-    field @blocked   :reader;
-    field @halted    :reader;
-    field %lookup    :reader;
+    field $rqueue    :reader;
 
     field %mailboxes    :reader; # PID -> Slight::Host::Letter[]
     field @dead_letters :reader; # Slight::Host::Letter[]
 
-    our $PID_SEQ = 0;
+    field %is_waiting :reader;
+    field %to_watch   :reader;
 
-    method lookup_pid ($pid) { $lookup{ $pid->raw } }
+    ADJUST {
+        $rqueue = Slight::Host::RunQueue->new;
+    }
+
+    method lookup_pid ($pid) { $rqueue->lookup($pid) }
 
     method enqueue_message ($from, $to, $msg) {
         push $mailboxes{ $to->raw }->@* => Slight::Host::Letter->new(
@@ -70,19 +103,27 @@ class Slight::Host {
 
     method run {
         while (true) {
-            while (@running) {
-                $timers->tick;
-                my $ctx  = shift @running;
-                my $kont = $ctx->run_until_host;
-                $kont->HANDLE( $self, $ctx );
+            while (my @to_be_run = $rqueue->running) {
+                DEBUG && say "GOT TO RUN: ", join ', ' => @to_be_run;
+                foreach my $ctx (@to_be_run) {
+                    $timers->tick;
+                    DEBUG && say "RUNNING: $ctx";
+                    my $kont = $ctx->run_until_host;
+                    $kont->HANDLE( $self, $ctx );
+                }
             }
-            if (my $wait = $timers->should_wait) {
-                $timers->snooze( $wait );
+            DEBUG && say "??? NO MORE WORK, CHECKING FOR TIMERS?";
+            if ($timers->has_active_timers) {
+                if (my $wait = $timers->should_wait) {
+                    DEBUG && say "@@ SNOOZE for $wait";
+                    $timers->snooze( $wait );
+                }
             } else {
+                DEBUG && say "~~~ EXITING LOOP";
                 last;
             }
         }
-        return @halted;
+        return $rqueue;
     }
 
     method schedule_timer ($timeout, $ctx) {
@@ -95,46 +136,57 @@ class Slight::Host {
         return $timer;
     }
 
-    method spawn_context ($exprs) {
+    method spawn_context ($exprs, $parent=undef) {
+        state $PID_SEQ = 0;
+
         my $ctx = Slight::Context->new(
             pid    => $alloc->PID(++$PID_SEQ),
             alloc  => $alloc,
             memory => Slight::WorkingMemory->new( alloc => $alloc )
         );
         $ctx->enqueue( @$exprs );
-        $mailboxes{ $ctx->pid->raw } = +[];
-        $lookup{ $ctx->pid->raw } = $ctx;
-        push @running => $ctx;
+
         DEBUG && say ">> ^^ SPAWN ${ctx}";
+        $mailboxes{ $ctx->pid->raw } = +[];
+
+        $rqueue->register( $ctx );
+        $rqueue->set_to_ready( $ctx );
+
         return $ctx;
     }
 
     method block ($ctx) {
-        # return if already blocked
-        return if grep { $ctx->pid->raw == $_->pid->raw } @blocked;
         DEBUG && say ">> !! BLOCKING ${ctx}";
-        push @blocked => $ctx;
+        $rqueue->set_to_blocked( $ctx );
     }
 
-    method kontinue ($ctx) {
-        # return if already running
-        return if grep { $ctx->pid->raw == $_->pid->raw } @running;
+    method resume ($ctx) {
         DEBUG && say ">> !! CONTINUING ${ctx}";
-        push @running => $ctx;
+        $rqueue->set_to_ready( $ctx );
+    }
+
+    method wait_for ($ctx, @pids) {
+        DEBUG && say ">> !! WAITING ${ctx} FOR ", join ', ' => @pids;
+        my $waiting_for = $is_waiting{$ctx->pid->raw} //= +{};
+        foreach my $pid (@pids) {
+            push @{ $to_watch{$pid->raw} //= +[] } => $ctx;
+            $waiting_for->{$pid->raw}++;
+        }
     }
 
     method halt ($ctx) {
-        # return if already removed from lookup
-        return if not exists $lookup{ $ctx->pid->raw };
         DEBUG && say ">> !! HALTING ${ctx}";
-        push @halted => $ctx;
-        delete $lookup{ $ctx->pid->raw };
-    }
+        $rqueue->set_to_halted( $ctx );
 
-    method unblock ($ctx) {
-        DEBUG && say ">> !! UNBLOCKING ${ctx}";
-        @blocked = grep { $ctx->pid->raw != $_->pid->raw } @blocked;
-        $self->kontinue($ctx);
+        if (my $watchers = delete $to_watch{$ctx->pid->raw}) {
+            foreach my $watcher (@$watchers) {
+                delete $is_waiting{$watcher->pid->raw}->{$ctx->pid->raw};
+                if (scalar keys $is_waiting{$watcher->pid->raw}->%* == 0) {
+                    delete $is_waiting{$watcher->pid->raw};
+                    $self->resume($watcher);
+                }
+            }
+        }
     }
 }
 

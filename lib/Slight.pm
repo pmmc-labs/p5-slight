@@ -151,14 +151,7 @@ class Slight {
 
         my sub _waitpid ($E, @pids) {
             return Slight::Kontinue::Waitpid->new( env => $E ),
-                    Slight::Kontinue::Eval::Rest->new( env => $E,
-                        rest => scalar @pids == 1
-                                    ? $pids[0]
-                                    : $alloc->List( @pids ) );
-        }
-
-        my sub _wait ($E) {
-            return Slight::Kontinue::Wait->new( env => $E );
+                    Slight::Kontinue::Eval::Rest->new( env => $E, rest => $alloc->List( @pids ) );
         }
 
         my sub yield ($E, $expr) {
@@ -219,7 +212,6 @@ class Slight {
             'recv'    => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,    is_operative => true ),
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
             'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
-            'wait'    => $alloc->Procedure( $alloc->Sym('wait'   ), \&_wait,    is_operative => true ),
 
             'set-timeout' => $alloc->Procedure( $alloc->Sym('set-timeout'), \&_set_timeout, is_operative => true ),
 

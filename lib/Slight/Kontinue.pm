@@ -56,14 +56,14 @@ class Slight::Kontinue::Error :isa(Slight::Kontinue::HOST) {
 class Slight::Kontinue::Yield :isa(Slight::Kontinue::HOST) {
     method HANDLE ($host, $ctx) {
         $host->DEBUG && say ">> SYS.YIELD in ${ctx}";
-        $host->kontinue( $ctx );
+        $host->resume( $ctx );
     }
 }
 
 class Slight::Kontinue::Sleep :isa(Slight::Kontinue::HOST) {
     method HANDLE ($host, $ctx) {
         my ($timeout) = $self->stack;
-        $host->schedule_timer( $timeout->raw, sub { $host->unblock( $ctx ) });
+        $host->schedule_timer( $timeout->raw, sub { $host->resume( $ctx ) });
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
         $host->block( $ctx );
     }
@@ -77,10 +77,10 @@ class Slight::Kontinue::Timeout :isa(Slight::Kontinue::HOST) {
                 Slight::Kontinue::Drop->new( env => $self->env ),
                 Slight::Kontinue::Apply::Call->new( env => $self->env, call => $callback )
             );
-            $host->unblock( $ctx );
+            $host->resume( $ctx );
         });
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
-        $host->kontinue( $ctx );
+        $host->resume( $ctx );
     }
 }
 
@@ -91,7 +91,7 @@ class Slight::Kontinue::Fork :isa(Slight::Kontinue::HOST) {
         $host->DEBUG && say ">> SYS.FORK in ${ctx}";
         my $child = $host->spawn_context( $host->assemble( $self->env, $self->expr ), $ctx );
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $child->pid ) );
-        $host->kontinue( $ctx );
+        $host->resume( $ctx );
     }
 }
 
@@ -99,21 +99,16 @@ class Slight::Kontinue::Getpid :isa(Slight::Kontinue::HOST) {
     method HANDLE ($host, $ctx) {
         $host->DEBUG && say ">> SYS.GETPID in ${ctx}";
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $ctx->pid ) );
-        $host->kontinue( $ctx );
+        $host->resume( $ctx );
     }
 }
 
 class Slight::Kontinue::Waitpid :isa(Slight::Kontinue::HOST) {
     method HANDLE ($host, $ctx) {
-        $host->DEBUG && say ">> SYS.WAITPID in ${ctx}";
-        die "TODO";
-    }
-}
-
-class Slight::Kontinue::Wait :isa(Slight::Kontinue::HOST) {
-    method HANDLE ($host, $ctx) {
-        $host->DEBUG && say ">> SYS.WAIT in ${ctx}";
-        die "TODO";
+        my @pids = $self->stack;
+        $host->DEBUG && say ">> SYS.WAITPID in ${ctx} for ", join ', ' => @pids;
+        $host->block( $ctx );
+        $host->wait_for( $ctx, @pids );
     }
 }
 
@@ -124,13 +119,13 @@ class Slight::Kontinue::Send :isa(Slight::Kontinue::HOST) {
         if (my $recvr = $host->lookup_pid( $pid )) {
             $host->DEBUG && say ">> -- SENDING LETTER ${msg} to ${pid} in ${ctx}";
             $host->enqueue_message( $ctx->pid, $pid, $msg );
-            $host->unblock( $recvr );
+            $host->resume( $recvr );
         } else {
             $host->DEBUG && say ">> -- DEAD LETTER ${msg} to ${pid} in ${ctx}";
             $host->discard_message( $ctx->pid, $pid, $msg );
         }
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $host->alloc->Nil ) );
-        $host->kontinue( $ctx );
+        $host->resume( $ctx );
     }
 }
 
@@ -140,13 +135,12 @@ class Slight::Kontinue::Recv :isa(Slight::Kontinue::HOST) {
         if (my $letter = $host->dequeue_message( $ctx->pid )) {
             $host->DEBUG && say ">> -- WEVE GOT MAIL! ${letter} in ${ctx}";
             $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $letter->msg ) );
-            $host->kontinue( $ctx );
+            $host->resume( $ctx );
         } else {
             $host->DEBUG && say ">> -- NO MAIL TODAY! in ${ctx}";
             $ctx->enqueue( $self );
             $host->block( $ctx );
         }
-
     }
 }
 

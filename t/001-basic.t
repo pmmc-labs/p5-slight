@@ -8,7 +8,7 @@ use Slight;
 
 ## -----------------------------------------------------------------------------
 my $sys    = Slight->new;
-my @halted = $sys->run(q[
+my $rqueue = $sys->run(q[
 
 (defun player (count)
     (if (== count 0)
@@ -31,12 +31,14 @@ my @halted = $sys->run(q[
 
 (send player-1 (list :Ping player-2))
 
+(waitpid player-1 player-2)
+(say "GAME OVER")
 
 ]);
 
 say '=' x 40;
 say 'RESULTS:';
-foreach my $ctx (@halted) {
+foreach my $ctx ($rqueue->halted) {
     my ($last) = $ctx->trace;
     say '-' x 40;
     if ($last isa Slight::Kontinue::Error) {
@@ -48,10 +50,10 @@ foreach my $ctx (@halted) {
 }
 say '-' x 40;
 say 'ZOMBIES!';
-say "  - $_" foreach $sys->host->running;
+say "  - $_" foreach $rqueue->running;
 say '-' x 40;
 say 'BLOCKED!';
-say "  - $_" foreach $sys->host->blocked;
+say "  - $_" foreach $rqueue->blocked;
 say '-' x 40;
 say 'DEAD LETTERS!';
 say "  - $_" foreach $sys->host->dead_letters;

@@ -8,7 +8,7 @@ use Slight;
 use Slight::WorkingMemory;
 
 my $sys    = Slight->new;
-my @halted = $sys->run(q[
+my $rqueue = $sys->run(q[
 
 (let pid
     (fork
@@ -39,12 +39,14 @@ my @halted = $sys->run(q[
 (send pid 'STOP)
 (send pid 'Yo) ;; <- dead letter
 
+(waitpid pid)
+(say "...done")
 
 ]);
 
 say '=' x 40;
 say 'RESULTS:';
-foreach my $ctx (@halted) {
+foreach my $ctx ($rqueue->halted) {
     my ($last) = $ctx->trace;
     say '-' x 40;
     if ($last isa Slight::Kontinue::Error) {
@@ -56,10 +58,10 @@ foreach my $ctx (@halted) {
 }
 say '-' x 40;
 say 'ZOMBIES!';
-say "  - $_" foreach $sys->host->running;
+say "  - $_" foreach $rqueue->running;
 say '-' x 40;
 say 'BLOCKED!';
-say "  - $_" foreach $sys->host->blocked;
+say "  - $_" foreach $rqueue->blocked;
 say '-' x 40;
 say 'DEAD LETTERS!';
 say "  - $_" foreach $sys->host->dead_letters;
