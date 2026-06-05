@@ -35,11 +35,6 @@ class Slight::Timers {
         $time = Time::HiRes::clock_gettime( $MONOTONIC );
     }
 
-    method wait ($duration) {
-        say "... got wait($duration)" if DEBUG;
-        Time::HiRes::sleep( $duration );
-    }
-
     method calculate_end_time ($timer) {
         my $now      = $self->now;
         my $end_time = $now + $timer->timeout;
@@ -121,6 +116,11 @@ class Slight::Timers {
         return $wait;
     }
 
+    method wait ($duration) {
+        say "... got wait($duration)" if DEBUG;
+        Time::HiRes::sleep( $duration );
+    }
+
     method pending_timers {
         my $now = $self->now;
 
@@ -143,6 +143,11 @@ class Slight::Timers {
                 warn "Timer callback failed ($timer) because: $e" if DEBUG;
             }
         }
+    }
+
+    method snooze ($wait) {
+        $self->wait( $wait );
+        $self->tick;
     }
 
     method tick {

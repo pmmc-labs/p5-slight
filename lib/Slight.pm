@@ -6,148 +6,47 @@ use experimental qw[ class switch ];
 
 use Slight::Allocator;
 use Slight::Context;
+use Slight::Host;
 use Slight::Kontinue;
 use Slight::Parser;
 use Slight::Term;
 use Slight::Timers;
 use Slight::WorkingMemory;
 
-class Slight::Letter {
-    # XXX - consider making this a proper Term
-    use overload '""' => 'to_string';
-    field $from :reader :param;
-    field $to   :reader :param;
-    field $msg  :reader :param;
-    method to_string {
-        sprintf 'msg(from: %s, to: %s, msg: %s)' => $from, $to, $msg;
-    }
-}
-
 class Slight {
-    use constant DEBUG => !!$ENV{DEBUG_SYS};
+    field $alloc     :reader;
+    field $root_env  :reader;
+    field $timers    :reader;
 
-    field $alloc     :reader :param = undef;
-    field $root_env  :reader :param = undef;
-    field $timers    :reader :param = undef;
-
-    field @running   :reader;
-    field @blocked   :reader;
-    field @halted    :reader;
-    field %lookup    :reader;
-
-    field %mailboxes    :reader; # PID -> Slight::Letter[]
-    field @dead_letters :reader; # Slight::Letter[]
+    field $host :reader;
+    field $init :reader;
 
     ADJUST {
-        $alloc    //= Slight::Allocator->new;
-        $timers   //= Slight::Timers->new;
-        $root_env //= $self->initialize_root_environment;
-    }
-
-    our $PID_SEQ = 0;
-
-    method lookup_pid ($pid) { $lookup{ $pid->raw } }
-
-    method enqueue_message ($from, $to, $msg) {
-        push $mailboxes{ $to->raw }->@* => Slight::Letter->new(
-            from => $from, to => $to, msg => $msg
-        )
-    }
-
-    method dequeue_message ($for) {
-        shift $mailboxes{ $for->raw }->@*;
-    }
-
-    method discard_message ($from, $to, $msg) {
-        push @dead_letters => Slight::Letter->new(
-            from => $from, to => $to, msg => $msg
-        )
-    }
-
-    method run {
-        while (true) {
-            while (@running) {
-                $timers->tick( $self );
-                my $ctx  = shift @running;
-                my $kont = $ctx->run_until_host;
-                $kont->HANDLE( $self, $ctx );
-            }
-            if (my $wait = $timers->should_wait) {
-                $timers->wait( $wait );
-                $timers->tick( $self );
-            } else {
-                last;
-            }
-        }
-        return @halted;
-    }
-
-    method schedule_timer ($timeout, $ctx) {
-        DEBUG && say "schedule( $timeout, $ctx )";
-        my $timer = Slight::Timers::Timer->new(
-            timeout  => $timeout,
-            callback => $ctx,
+        $alloc    = Slight::Allocator->new;
+        $timers   = Slight::Timers->new;
+        $root_env = $self->initialize_root_environment;
+        $host     = Slight::Host->new(
+            alloc    => $alloc,
+            timers   => $timers,
+            root_env => $root_env,
         );
-        $timers->schedule_timer($timer);
-        return $timer;
     }
 
-    method spawn_context ($exprs) {
-        my $ctx = Slight::Context->new(
-            pid    => $alloc->PID(++$PID_SEQ),
-            alloc  => $alloc,
-            memory => Slight::WorkingMemory->new( alloc => $alloc )
-        );
-        $ctx->enqueue( @$exprs );
-        $mailboxes{ $ctx->pid->raw } = +[];
-        $lookup{ $ctx->pid->raw } = $ctx;
-        push @running => $ctx;
-        DEBUG && say ">> ^^ SPAWN ${ctx}";
-        return $ctx;
+    ## host access
+
+    method run ($src) {
+        $init = $host->spawn_context( $self->compile( $src ) );
+        $host->run;
     }
 
-    method block ($ctx) {
-        # return if already blocked
-        return if grep { $ctx->pid->raw == $_->pid->raw } @blocked;
-        DEBUG && say ">> !! BLOCKING ${ctx}";
-        push @blocked => $ctx;
-    }
-
-    method kontinue ($ctx) {
-        # return if already running
-        return if grep { $ctx->pid->raw == $_->pid->raw } @running;
-        DEBUG && say ">> !! CONTINUING ${ctx}";
-        push @running => $ctx;
-    }
-
-    method halt ($ctx) {
-        # return if already removed from lookup
-        return if not exists $lookup{ $ctx->pid->raw };
-        DEBUG && say ">> !! HALTING ${ctx}";
-        push @halted => $ctx;
-        delete $lookup{ $ctx->pid->raw };
-    }
-
-    method unblock ($ctx) {
-        DEBUG && say ">> !! UNBLOCKING ${ctx}";
-        @blocked = grep { $ctx->pid->raw != $_->pid->raw } @blocked;
-        $self->kontinue($ctx);
-    }
+    ## compiler
 
     method compile ($src) {
         my @exprs = Slight::Parser->new( alloc => $alloc )->parse( $src );
-        return $self->assemble( $root_env, @exprs );
+        return $host->assemble( $root_env, @exprs );
     }
 
-    method assemble ($env, @exprs) {
-        return +[
-            Slight::Kontinue::Halt->new( env => $env ),
-            (reverse map {
-                Slight::Kontinue::Drop->new( env => $env ),
-                Slight::Kontinue::Eval::Expr->new( env => $env, expr => $_ )
-            } @exprs),
-        ];
-    }
+    ## env initialization
 
     method initialize_root_environment {
         my sub add ($n, $m) { $alloc->Num( $n->raw + $m->raw ) }
@@ -250,6 +149,18 @@ class Slight {
             return Slight::Kontinue::Fork->new( env => $E, expr => $expr );
         }
 
+        my sub _waitpid ($E, @pids) {
+            return Slight::Kontinue::Waitpid->new( env => $E ),
+                    Slight::Kontinue::Eval::Rest->new( env => $E,
+                        rest => scalar @pids == 1
+                                    ? $pids[0]
+                                    : $alloc->List( @pids ) );
+        }
+
+        my sub _wait ($E) {
+            return Slight::Kontinue::Wait->new( env => $E );
+        }
+
         my sub yield ($E, $expr) {
             return Slight::Kontinue::Eval::Expr->new( env => $E, expr => $expr ),
                    Slight::Kontinue::Yield->new( env => $E );
@@ -307,6 +218,8 @@ class Slight {
             'send'    => $alloc->Procedure( $alloc->Sym('send'   ), \&_send,    is_operative => true ),
             'recv'    => $alloc->Procedure( $alloc->Sym('recv'   ), \&_recv,    is_operative => true ),
             'getpid'  => $alloc->Procedure( $alloc->Sym('getpid' ), \&_getpid,  is_operative => true ),
+            'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
+            'wait'    => $alloc->Procedure( $alloc->Sym('wait'   ), \&_wait,    is_operative => true ),
 
             'set-timeout' => $alloc->Procedure( $alloc->Sym('set-timeout'), \&_set_timeout, is_operative => true ),
 
@@ -359,7 +272,5 @@ class Slight {
             '<=' => $alloc->Procedure( $alloc->Sym('<='), \&num_le, is_applicative => true ),
         )
     }
+
 }
-
-
-

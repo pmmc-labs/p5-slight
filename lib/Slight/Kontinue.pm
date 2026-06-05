@@ -89,7 +89,7 @@ class Slight::Kontinue::Fork :isa(Slight::Kontinue::HOST) {
 
     method HANDLE ($host, $ctx) {
         $host->DEBUG && say ">> SYS.FORK in ${ctx}";
-        my $child = $host->spawn_context( $host->assemble( $self->env, $self->expr ) );
+        my $child = $host->spawn_context( $host->assemble( $self->env, $self->expr ), $ctx );
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $child->pid ) );
         $host->kontinue( $ctx );
     }
@@ -100,6 +100,20 @@ class Slight::Kontinue::Getpid :isa(Slight::Kontinue::HOST) {
         $host->DEBUG && say ">> SYS.GETPID in ${ctx}";
         $ctx->enqueue( Slight::Kontinue::Just->new( env => $self->env )->PUSH( $ctx->pid ) );
         $host->kontinue( $ctx );
+    }
+}
+
+class Slight::Kontinue::Waitpid :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.WAITPID in ${ctx}";
+        die "TODO";
+    }
+}
+
+class Slight::Kontinue::Wait :isa(Slight::Kontinue::HOST) {
+    method HANDLE ($host, $ctx) {
+        $host->DEBUG && say ">> SYS.WAIT in ${ctx}";
+        die "TODO";
     }
 }
 

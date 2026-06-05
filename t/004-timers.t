@@ -7,8 +7,8 @@ use experimental qw[ class switch ];
 use Slight;
 use Slight::WorkingMemory;
 
-my $sys  = Slight->new;
-my $prog = $sys->compile(q[
+my $sys    = Slight->new;
+my @halted = $sys->run(q[
 
 (defun bouncer (timeout n)
     (do
@@ -28,18 +28,14 @@ my $prog = $sys->compile(q[
 )
 
 (say "SO IT BEGINS")
-(fork (yield (bouncer 1 5)))
+(let p1 (fork (yield (bouncer 1 5))))
 (sleep 3)
-(fork (yield (bouncer 1 3)))
+(let p2 (fork (yield (bouncer 1 3))))
 (say "GETTING THERE")
-(sleep 5)
+
 (say "WHA!!!")
 
 ]);
-
-my $prog_ctx = $sys->spawn_context( $prog );
-
-my @halted = $sys->run;
 
 say '=' x 40;
 say 'RESULTS:';
@@ -55,15 +51,15 @@ foreach my $ctx (@halted) {
 }
 say '-' x 40;
 say 'ZOMBIES!';
-say "  - $_" foreach $sys->running;
+say "  - $_" foreach $sys->host->running;
 say '-' x 40;
 say 'BLOCKED!';
-say "  - $_" foreach $sys->blocked;
+say "  - $_" foreach $sys->host->blocked;
 say '-' x 40;
 say 'DEAD LETTERS!';
-say "  - $_" foreach $sys->dead_letters;
+say "  - $_" foreach $sys->host->dead_letters;
 say '-' x 40;
 say 'UNDELIVERED!';
-my %mb = $sys->mailboxes;
+my %mb = $sys->host->mailboxes;
 say "  - $_" foreach map $_->@*, values %mb;
 say '=' x 40;
