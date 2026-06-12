@@ -14,6 +14,8 @@ use Slight::Timers;
 use Slight::WorkingMemory;
 
 class Slight {
+    use Time::HiRes qw[ gettimeofday ];
+
     field $alloc     :reader;
     field $root_env  :reader;
     field $timers    :reader;
@@ -192,9 +194,18 @@ class Slight {
         my sub _predicate ($t) { $t->predicate }
         my sub _object    ($t) { $t->object    }
 
+        my sub _gettod () {
+            my ($s, $f) = Time::HiRes::gettimeofday;
+            return $alloc->Pair( $alloc->Num($s), $alloc->Num($f) );
+        }
+
         # ...
 
         $alloc->Env(
+
+            'gettimeofday' => $alloc->Procedure( $alloc->Sym('gettimeofday'), \&_gettod, is_applicative => true ),
+
+
             # special forms
             'lambda' => $alloc->Procedure( $alloc->Sym('lambda' ), \&lambda, is_operative => true ),
             'quote'  => $alloc->Procedure( $alloc->Sym('quote'  ), \&quote,  is_operative => true ),

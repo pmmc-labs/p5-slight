@@ -17,6 +17,8 @@ class Slight::Term {
     method is_nil      { false }
     method is_callable { false }
 
+    method is_same_as ($other) { $hash eq $other->hash }
+
     method to_string { __CLASS__ }
 
     sub hash_of ($class, @args) {
@@ -122,6 +124,8 @@ class Slight::Term::Bool :isa(Slight::Term::Literal) {
 class Slight::Term::Pair :isa(Slight::Term) {
     field $first  :param :reader;
     field $second :param :reader;
+
+    method uncons { $first, $second }
 
     method to_string {
         sprintf '(%s . %s)' => $first->to_string, $second->to_string;

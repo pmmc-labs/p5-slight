@@ -33,7 +33,10 @@ class Slight::Host::RunQueue {
     field %registry;
 
     method lookup   ($pid) { $registry{$pid->raw} }
-    method register ($ctx) { $registry{$ctx->pid->raw} = $ctx }
+    method register ($ctx) {
+        $registry{$ctx->pid->raw} = $ctx;
+        $self->set_to_ready($ctx);
+    }
 
     # ...
 
@@ -150,8 +153,6 @@ class Slight::Host {
         $mailboxes{ $ctx->pid->raw } = +[];
 
         $rqueue->register( $ctx );
-        $rqueue->set_to_ready( $ctx );
-
         return $ctx;
     }
 
