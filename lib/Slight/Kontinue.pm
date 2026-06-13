@@ -152,39 +152,6 @@ class Slight::Kontinue::STEP :isa(Slight::Kontinue) {
     method STEP ($ctx) { ... }
 }
 
-# Memory operations
-
-class Slight::Kontinue::MemOp :isa(Slight::Kontinue::STEP) {}
-
-class Slight::Kontinue::MemOp::Assert :isa(Slight::Kontinue::MemOp) {
-    method STEP ($ctx) {
-        my ($s, $p, $o) = $self->stack;
-        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
-            $ctx->memory->assert( $s, $p, $o )
-        );
-    }
-}
-
-class Slight::Kontinue::MemOp::Query :isa(Slight::Kontinue::MemOp) {
-    method STEP ($ctx) {
-        my ($s, $p, $o) = $self->stack;
-        my @results = $ctx->memory->query( $s, $p, $o );
-        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
-            $ctx->alloc->List( @results )
-        );
-    }
-}
-
-class Slight::Kontinue::MemOp::Retract :isa(Slight::Kontinue::MemOp) {
-    method STEP ($ctx) {
-        my ($s, $p, $o) = $self->stack;
-        my $ok = $ctx->memory->retract( $s, $p, $o );
-        return Slight::Kontinue::Just->new( env => $self->env )->PUSH(
-            $ok ? $ctx->alloc->True : $ctx->alloc->False
-        );
-    }
-}
-
 # Other Kontinues
 
 class Slight::Kontinue::Just :isa(Slight::Kontinue::STEP) {

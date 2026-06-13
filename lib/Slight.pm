@@ -11,7 +11,6 @@ use Slight::Kontinue;
 use Slight::Parser;
 use Slight::Term;
 use Slight::Timers;
-use Slight::WorkingMemory;
 
 class Slight {
     use Time::HiRes qw[ gettimeofday ];
@@ -172,28 +171,6 @@ class Slight {
 
         # ...
 
-        my sub _query ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Query->new( env => $E ),
-                    Slight::Kontinue::Eval::Rest->new( env => $E,
-                        rest => $alloc->List( $s, $p, $o ) );
-        }
-
-        my sub _assert ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Assert->new( env => $E ),
-                    Slight::Kontinue::Eval::Rest->new( env => $E,
-                        rest => $alloc->List( $s, $p, $o ) );
-        }
-
-        my sub _retract ($E, $s, $p, $o) {
-            return Slight::Kontinue::MemOp::Retract->new( env => $E ),
-                    Slight::Kontinue::Eval::Rest->new( env => $E,
-                        rest => $alloc->List( $s, $p, $o ) );
-        }
-
-        my sub _subject   ($t) { $t->subject   }
-        my sub _predicate ($t) { $t->predicate }
-        my sub _object    ($t) { $t->object    }
-
         my sub _gettod () {
             my ($s, $f) = Time::HiRes::gettimeofday;
             return $alloc->Pair( $alloc->Num($s), $alloc->Num($f) );
@@ -225,15 +202,6 @@ class Slight {
             'waitpid' => $alloc->Procedure( $alloc->Sym('waitpid'), \&_waitpid, is_operative => true ),
 
             'set-timeout' => $alloc->Procedure( $alloc->Sym('set-timeout'), \&_set_timeout, is_operative => true ),
-
-            # memory operations
-            'query?'     => $alloc->Procedure( $alloc->Sym('query?'   ), \&_query,   is_operative => true ),
-            'assert+'    => $alloc->Procedure( $alloc->Sym('assert+'  ), \&_assert,  is_operative => true ),
-            'retract!'   => $alloc->Procedure( $alloc->Sym('retract!' ), \&_retract, is_operative => true ),
-            # memory fact operations
-            '.subject'   => $alloc->Procedure( $alloc->Sym('.subject'   ), \&_subject,   is_applicative => true ),
-            '.predicate' => $alloc->Procedure( $alloc->Sym('.predicate' ), \&_predicate, is_applicative => true ),
-            '.object'    => $alloc->Procedure( $alloc->Sym('.object'    ), \&_object,    is_applicative => true ),
 
             # i/o helpers
             'say'    => $alloc->Procedure( $alloc->Sym('say'    ), \&_say,  is_applicative => true ),

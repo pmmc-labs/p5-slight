@@ -10,7 +10,6 @@ use Slight::Kontinue;
 use Slight::Parser;
 use Slight::Term;
 use Slight::Timers;
-use Slight::WorkingMemory;
 
 class Slight::Host::Letter {
     # XXX - consider making this a proper Term
@@ -145,7 +144,6 @@ class Slight::Host {
         my $ctx = Slight::Context->new(
             pid    => $alloc->PID(++$PID_SEQ),
             alloc  => $alloc,
-            memory => Slight::WorkingMemory->new( alloc => $alloc )
         );
         $ctx->enqueue( @$exprs );
 

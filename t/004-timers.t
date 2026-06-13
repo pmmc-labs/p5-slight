@@ -5,7 +5,6 @@ use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
 use Slight;
-use Slight::WorkingMemory;
 
 my $sys    = Slight->new;
 my $rqueue = $sys->run(q[
