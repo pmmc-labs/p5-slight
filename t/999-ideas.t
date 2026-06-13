@@ -88,6 +88,9 @@ class Eval::Expr :isa(Kontinue) {
                 )
             }
             when ('Sym') {
+                # if the lookup fails, we should return an Error
+                # that is similar to the Halt, whose kontinue
+                # will return undef, to stop it.
                 return $self->kont->kontinue( $self->lookup($expr) );
             }
             default {
@@ -108,6 +111,7 @@ class Apply::Expr :isa(Kontinue) {
         say '-' x 120;
         say "  args: ${args}";
         say " +call: ${call}";
+        # NOTE: we need to decide if applicative or operative here
         Eval::Rest->new(
             env  => $self->env,
             rest => $args,
