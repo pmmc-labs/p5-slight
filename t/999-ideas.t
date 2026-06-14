@@ -101,6 +101,10 @@ class Kontinue {
         sprintf '%s > %s', __CLASS__, defined $kont ? $kont->to_string : '!!';
     }
 
+    method throw ($error) {
+        Error->new( env => $self->env, error => $error, kont => $self->kont )
+    }
+
     our $TICKS = 0;
     method DEBUG (@args) {
         say '-' x 120;
@@ -139,12 +143,20 @@ class Eval::Expr :isa(Kontinue) {
             }
             when ('Sym') {
                 my $value = $self->env->lookup($expr);
-                return Error->new( env  => $self->env, error => "Unable to find ${expr} in Env" )
+                return $self->throw("Unable to find ${expr} in Env")
                     if not defined $value;
-                return $self->kont->kontinue( $value );
+                return Return->new(
+                    env   => $self->env,
+                    value => $value,
+                    kont  => $self->kont
+                );
             }
             default {
-                return $self->kont->kontinue( $expr );
+                return Return->new(
+                    env   => $self->env,
+                    value => $expr,
+                    kont  => $self->kont
+                );
             }
         }
     }
@@ -155,13 +167,16 @@ class Apply::Expr :isa(Kontinue) {
 
     method kontinue ($call) {
         $self->DEBUG(args => $args, '+call' => $call);
-        # NOTE: we need to decide if applicative or operative here
         if ($call->is_operative) {
-            return Apply::Call->new(
-                env  => $self->env,
-                call => $call,
-                kont => $self->kont,
-            )->kontinue( $args );
+            return Return->new(
+                env   => $self->env,
+                value => $args,
+                kont  => Apply::Call->new(
+                    env  => $self->env,
+                    call => $call,
+                    kont => $self->kont,
+                )
+            );
         } elsif ($args->is_nil) {
             # nullary ops
             return Apply::Call->new(
@@ -203,12 +218,13 @@ class Eval::Rest :isa(Kontinue) {
     field $rest :param :reader;
     field $done :param :reader = Nil->new;
 
-    # 4. accumulate evaluates $args until nil and return to Apply-Call
     method kontinue ($evaled) {
         $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled);
         if ($rest->is_nil) {
-            return $self->kont->kontinue(
-                Cons->new( head => $evaled, tail => $done )->reverse
+            return Return->new(
+                env   => $self->env,
+                value => Cons->new( head => $evaled, tail => $done )->reverse,
+                kont  => $self->kont,
             );
         } else {
             # given (blessed $rest->head)
@@ -240,7 +256,11 @@ class Apply::Call :isa(Kontinue) {
                 if ($call->is_operative) {
                     unshift @args => $self->env;
                 }
-                return $self->kont->kontinue( $call->proc->( @args ) );
+                return Return->new(
+                    env   => $self->env,
+                    value => $call->proc->( @args ),
+                    kont  => $self->kont,
+                );
             }
             when ('Lambda') {
                 my @args = $args->uncons;
@@ -261,9 +281,7 @@ class Apply::Call :isa(Kontinue) {
                 );
             }
             default {
-                # 5a. create new %ENV and bind $args to call parameters
-                # 5b. create Scope-wrapped Eval-Expr with $call->body and new %ENV
-                die "TODO"
+                die "Cannot call => ${call}";
             }
         }
     }
@@ -274,7 +292,7 @@ class Return :isa(Kontinue) {
 
     method kontinue {
         $self->DEBUG('value' => $value);
-        $self->kont->kontinue( $value );
+        return $value;
     }
 }
 
@@ -339,8 +357,22 @@ say $expr;
 my $epoch = 0;
 my $halt = Halt->new( env => $env );
 my $next = Eval::Expr->new( env => $env, expr => $expr, kont => $halt );
-while (defined($next = $next->kontinue)) {
+while (defined $next) {
     $epoch++;
+    given (blessed $next) {
+        when ('Return') {
+            $next = $next->kont->kontinue( $next->value );
+        }
+        when ('Error') {
+            $next = $next->kontinue; # good enough for now
+        }
+        when ('Halt') {
+            $next = $next->kontinue; # good enough for now
+        }
+        default {
+            $next = $next->kontinue;
+        }
+    }
     #say ">>>>>>>[${epoch}]> ", $next;
 }
 say '-' x 120;
