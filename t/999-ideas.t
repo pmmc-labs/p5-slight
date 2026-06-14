@@ -4,6 +4,8 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
+## -----------------------------------------------------------------------------
+
 class Term {
     use overload '""' => 'to_string';
     method to_string { ... }
@@ -28,19 +30,56 @@ class Nil :isa(Term) {
     method to_string { '()' }
     method is_nil { true }
 }
+
 class Cons :isa(Term) {
     field $head :param :reader;
     field $tail :param :reader;
 
-    method to_string { sprintf '(%s %s)' => $head->to_string, $tail->to_string }
+    method uncons {
+        my @list;
+        my $l = $self;
+        until ($l->is_nil) {
+            push @list => $l->head;
+            $l = $l->tail;
+        }
+        return @list;
+    }
+
+    method to_string { sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons }
+}
+
+class Lambda :isa(Term) {
+    field $params :param :reader;
+    field $body   :param :reader;
+    field $env    :param :reader;
+
+    method is_operative   { false }
+    method is_applicative { true  }
+
+    method to_string { sprintf '(lambda %s %s)' => $params->to_string, $body->to_string }
 }
 
 class Native :isa(Term) {
     field $name :param :reader;
     field $proc :param :reader;
 
+    field $is_operative :param :reader = false;
+    method is_applicative { !$is_operative }
+
     method to_string { sprintf '#<%s>' => $name }
 }
+
+class Env {
+    field $parent   :param :reader = undef;
+    field $bindings :param :reader = +{};
+
+    method lookup ($sym) {
+        return $bindings->{ $sym->ident }
+            // (defined $parent ? $parent->lookup($sym) : undef);
+    }
+}
+
+## -----------------------------------------------------------------------------
 
 sub sym ($i) { Sym->new( ident => $i ) }
 sub num ($n) { Num->new(   raw => $n ) }
@@ -54,16 +93,31 @@ sub cons (@args) {
     return $list;
 }
 
+## -----------------------------------------------------------------------------
+
 class Kontinue {
     use overload '""' => 'to_string';
 
-    field $kont :param :reader = undef;
     field $env  :param :reader;
-
-    method lookup ($sym) { $env->{ $sym->ident } }
+    field $kont :param :reader = undef;
 
     method to_string {
-        sprintf '%s > %s', __CLASS__, defined $kont ? $kont->to_string : '';
+        sprintf '%s > %s', __CLASS__, defined $kont ? $kont->to_string : '!!';
+    }
+
+    our $TICKS = 0;
+    method DEBUG (@args) {
+        say '-' x 120;
+        say sprintf '=> %-12s : %-87s   %12s' => __CLASS__, $self->kont // '!!', (caller(1))[0], ;
+        $TICKS++;
+        say '-' x 120;
+        foreach my ($name, $arg) (@args) {
+            say sprintf '%15s : %s' =>
+                $name,
+                reftype $arg eq 'ARRAY' ?
+                    (join ', ' => map $_->to_string, @$arg)
+                    : $arg->to_string;
+        }
     }
 }
 
@@ -71,12 +125,14 @@ class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
     method kontinue {
-        say '-' x 120;
-        say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
-        say '-' x 120;
-        say "  expr: ${expr}";
+        $self->DEBUG(expr => $expr);
+
         given (blessed $expr) {
             when ('Cons') {
+                # given (blessed $expr->head)
+                #   when Sym      -> resolve it and jump to Apply-Expr
+                #   when Callable -> create Apply-Expr and call ->kontinue(Calleble)
+                # ...
                 return Eval::Expr->new(
                     env  => $self->env,
                     expr => $expr->head,
@@ -88,10 +144,10 @@ class Eval::Expr :isa(Kontinue) {
                 )
             }
             when ('Sym') {
-                # if the lookup fails, we should return an Error
-                # that is similar to the Halt, whose kontinue
-                # will return undef, to stop it.
-                return $self->kont->kontinue( $self->lookup($expr) );
+                my $value = $self->env->lookup($expr);
+                return Error->new( env  => $self->env, error => "Unable to find ${expr} in Env" )
+                    if not defined $value;
+                return $self->kont->kontinue( $value );
             }
             default {
                 return $self->kont->kontinue( $expr );
@@ -103,24 +159,51 @@ class Eval::Expr :isa(Kontinue) {
 class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
-    # 3a. creates Apply-Call with evaluated $head
-    # 3b. creates Eval::Rest to evaluate $args
     method kontinue ($call) {
-        say '-' x 120;
-        say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
-        say '-' x 120;
-        say "  args: ${args}";
-        say " +call: ${call}";
+        $self->DEBUG(args => $args, '+call' => $call);
         # NOTE: we need to decide if applicative or operative here
-        Eval::Rest->new(
-            env  => $self->env,
-            rest => $args,
-            kont => Apply::Call->new(
+        if ($call->is_operative) {
+            return Apply::Call->new(
                 env  => $self->env,
                 call => $call,
                 kont => $self->kont,
+            )->kontinue(
+                $args->uncons
+            );
+        } elsif ($args->is_nil) {
+            # nullary ops
+            return Apply::Call->new(
+                env  => $self->env,
+                call => $call,
+                kont => $self->kont,
+            );
+        } elsif ($args->tail->is_nil) {
+            # unary ops
+            return Eval::Expr->new(
+                env  => $self->env,
+                expr => $args->head,
+                kont => Apply::Call->new(
+                    env  => $self->env,
+                    call => $call,
+                    kont => $self->kont,
+                )
             )
-        )
+        } else {
+            # binary & list ops
+            return Eval::Expr->new(
+                env  => $self->env,
+                expr => $args->head,
+                kont => Eval::Rest->new(
+                    env  => $self->env,
+                    rest => $args->tail,
+                    kont => Apply::Call->new(
+                        env  => $self->env,
+                        call => $call,
+                        kont => $self->kont,
+                    )
+                )
+            )
+        }
     }
 }
 
@@ -129,23 +212,21 @@ class Eval::Rest :isa(Kontinue) {
     field $done :param :reader = +[];
 
     # 4. accumulate evaluates $args until nil and return to Apply-Call
-    method kontinue (@evaled) {
-        say '-' x 120;
-        say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
-        say '-' x 120;
-        say "  rest: ${rest}";
-        say "  done: ", join ', ' => map $_->to_string, @$done;
-        say " +eval: ", join ', ' => map $_->to_string, @evaled;
+    method kontinue ($evaled) {
+        $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled);
         if ($rest->is_nil) {
-            return $self->kont->kontinue( @$done, @evaled );
+            return $self->kont->kontinue( @$done, $evaled );
         } else {
+            # given (blessed $rest->head)
+            #     when Literal ... skip Eval-Expr
+            # ... do this in a loop?
             return Eval::Expr->new(
                 env  => $self->env,
                 expr => $rest->head,
                 kont => Eval::Rest->new(
                     env  => $self->env,
                     rest => $rest->tail,
-                    done => [ @$done, @evaled ],
+                    done => [ @$done, $evaled ],
                     kont => $self->kont,
                 )
             )
@@ -157,14 +238,31 @@ class Apply::Call :isa(Kontinue) {
     field $call :param :reader;
 
     method kontinue (@args) {
-        say '-' x 120;
-        say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
-        say '-' x 120;
-        say "  call: ${call}";
-        say " +args: ", join ', ' => map $_->to_string, @args;
+        $self->DEBUG(call => $call, '+args' => \@args);
+
         given (blessed $call) {
             when ('Native') {
+                if ($call->is_operative) {
+                    unshift @args => $self->env;
+                }
                 return $self->kont->kontinue( $call->proc->( @args ) );
+            }
+            when ('Lambda') {
+
+                my %local;
+                my $params = $call->params;
+                until ($params->is_nil) {
+                    $local{ $params->head->ident } = shift @args;
+                    $params = $params->tail;
+                }
+
+                my $local = Env->new( parent => $self->env, bindings => \%local );
+
+                return Eval::Expr->new(
+                    env  => $local,
+                    expr => $call->body,
+                    kont => $self->kont,
+                );
             }
             default {
                 # 5a. create new %ENV and bind $args to call parameters
@@ -175,38 +273,67 @@ class Apply::Call :isa(Kontinue) {
     }
 }
 
-class Halt :isa(Kontinue) {
-    field $result;
+class Error :isa(Kontinue) {
+    field $error :param :reader;
 
-    method kontinue ($arg) {
-        say join ' : ' => __CLASS__, $arg;
-        $result = $arg;
+    method kontinue {
+        $self->DEBUG('error' => $error);
         return undef;
     }
 }
 
-my %env = (
-    '+' => Native->new( name => '+', proc => sub ($n, $m) { num($n->raw + $m->raw) }),
-    '-' => Native->new( name => '-', proc => sub ($n, $m) { num($n->raw - $m->raw) }),
-    '*' => Native->new( name => '*', proc => sub ($n, $m) { num($n->raw * $m->raw) }),
-    '/' => Native->new( name => '/', proc => sub ($n, $m) { num($n->raw / $m->raw) }),
-    '%' => Native->new( name => '%', proc => sub ($n, $m) { num($n->raw % $m->raw) }),
+class Halt :isa(Kontinue) {
+    field $result;
+
+    method kontinue ($r) {
+        $self->DEBUG('+result' => $r);
+        $result = $r;
+        return undef;
+    }
+}
+
+## -----------------------------------------------------------------------------
+
+my $env = Env->new(
+    bindings => +{
+        '+' => Native->new( name => '+', proc => sub ($n, $m) { num($n->raw + $m->raw) }),
+        '-' => Native->new( name => '-', proc => sub ($n, $m) { num($n->raw - $m->raw) }),
+        '*' => Native->new( name => '*', proc => sub ($n, $m) { num($n->raw * $m->raw) }),
+        '/' => Native->new( name => '/', proc => sub ($n, $m) { num($n->raw / $m->raw) }),
+        '%' => Native->new( name => '%', proc => sub ($n, $m) { num($n->raw % $m->raw) }),
+
+        'ten' => Native->new( name => 'ten', proc => sub () { num(10) }),
+
+        'lambda' => Native->new(
+            name => 'lambda',
+            proc => sub ($e, $p, $b) { Lambda->new( params => $p, body => $b, env => $e ) },
+            is_operative => true,
+        ),
+    }
 );
 
 
-my $expr = cons( sym('+'),
-    num(10), num(20)
-    #cons( sym('-'), num(12), num(2) ),
-    #cons( sym('*'), num(5), num(4) ),
+my $adder = cons(
+    sym('lambda'),
+    cons( sym('x'), sym('y') ),
+    cons( sym('+'), sym('x'), sym('y') ),
 );
+
+my $expr = cons( $adder, num(10), num(20) );
 
 say $expr;
 
-my $halt = Halt->new( env => \%env );
-my $next = Eval::Expr->new( env  => \%env, expr => $expr, kont => $halt );
+my $epoch = 0;
+my $halt = Halt->new( env => $env );
+my $next = Eval::Expr->new( env => $env, expr => $expr, kont => $halt );
 while (defined($next = $next->kontinue)) {
-    say "=" x 120;
+    $epoch++;
+    #say ">>>>>>>[${epoch}]> ", $next;
 }
+say '-' x 120;
+say "  TICKS: ", $Kontinue::TICKS;
+say " EPOCHS: ", $epoch;
+say '-' x 120;
 
 
 
@@ -244,6 +371,7 @@ class Eval::Head :isa(Kontinue) {
     method kontinue {
         say '-' x 120;
         say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
+        $Kontinue::tick++;
         say '-' x 120;
         say "  head: ${head}";
         say "  rest: ${rest}";
