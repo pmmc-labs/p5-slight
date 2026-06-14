@@ -93,6 +93,8 @@ sub cons (@args) {
     return $list;
 }
 
+sub append ($l, $r) { cons( $l->uncons, $r->uncons ) }
+
 ## -----------------------------------------------------------------------------
 
 class Kontinue {
@@ -114,9 +116,7 @@ class Kontinue {
         foreach my ($name, $arg) (@args) {
             say sprintf '%15s : %s' =>
                 $name,
-                reftype $arg eq 'ARRAY' ?
-                    (join ', ' => map $_->to_string, @$arg)
-                    : $arg->to_string;
+                $arg->to_string;
         }
     }
 }
@@ -209,13 +209,15 @@ class Apply::Expr :isa(Kontinue) {
 
 class Eval::Rest :isa(Kontinue) {
     field $rest :param :reader;
-    field $done :param :reader = +[];
+    field $done :param :reader = Nil->new;
 
     # 4. accumulate evaluates $args until nil and return to Apply-Call
     method kontinue ($evaled) {
         $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled);
         if ($rest->is_nil) {
-            return $self->kont->kontinue( @$done, $evaled );
+            return $self->kont->kontinue(
+                Cons->new( head => $evaled, tail => $done )
+            );
         } else {
             # given (blessed $rest->head)
             #     when Literal ... skip Eval-Expr
@@ -226,7 +228,7 @@ class Eval::Rest :isa(Kontinue) {
                 kont => Eval::Rest->new(
                     env  => $self->env,
                     rest => $rest->tail,
-                    done => [ @$done, $evaled ],
+                    done => Cons->new( head => $evaled, tail => $done ),
                     kont => $self->kont,
                 )
             )
@@ -237,22 +239,24 @@ class Eval::Rest :isa(Kontinue) {
 class Apply::Call :isa(Kontinue) {
     field $call :param :reader;
 
-    method kontinue (@args) {
-        $self->DEBUG(call => $call, '+args' => \@args);
+    method kontinue ($args) {
+        $self->DEBUG(call => $call, '+args' => $args);
 
         given (blessed $call) {
             when ('Native') {
+                my @args = reverse $args->uncons;
                 if ($call->is_operative) {
                     unshift @args => $self->env;
                 }
                 return $self->kont->kontinue( $call->proc->( @args ) );
             }
             when ('Lambda') {
+                my @args = reverse $args->uncons;
 
                 my %local;
                 my $params = $call->params;
                 until ($params->is_nil) {
-                    $local{ $params->head->ident } = shift @args;
+                    $local{ $params->head->ident } = pop @args;
                     $params = $params->tail;
                 }
 
@@ -270,6 +274,15 @@ class Apply::Call :isa(Kontinue) {
                 die "TODO"
             }
         }
+    }
+}
+
+class Return :isa(Kontinue) {
+    field $value :param :reader;
+
+    method kontinue {
+        $self->DEBUG('value' => $value);
+        $self->kont->kontinue( $value );
     }
 }
 
