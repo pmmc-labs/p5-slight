@@ -17,21 +17,14 @@ class Sym :isa(Term) {
     method to_string { $ident }
 }
 
-class Literal :isa(Term) {
-    field $raw :param :reader;
-    method to_string { "${raw}" }
-}
+class List :isa(Term) {}
 
-class Str  :isa(Literal) {}
-class Num  :isa(Literal) {}
-class Bool :isa(Literal) {}
-
-class Nil :isa(Term) {
+class Nil :isa(List) {
     method to_string { '()' }
     method is_nil { true }
 }
 
-class Cons :isa(Term) {
+class Cons :isa(List) {
     field $head :param :reader;
     field $tail :param :reader;
 
@@ -58,7 +51,18 @@ class Cons :isa(Term) {
     method to_string { sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons }
 }
 
-class Lambda :isa(Term) {
+class Literal :isa(Term) {}
+
+class Str  :isa(Literal) {field $raw :param :reader; method to_string { $raw }}
+class Num  :isa(Literal) {field $raw :param :reader; method to_string { "${raw}" }}
+class Bool :isa(Literal) {field $raw :param :reader; method to_string { $raw ? 'true' : 'false' }}
+
+class Callable :isa(Literal) {
+    method is_operative   { ... }
+    method is_applicative { ... }
+}
+
+class Lambda :isa(Callable) {
     field $params :param :reader;
     field $body   :param :reader;
     field $env    :param :reader;
@@ -69,7 +73,7 @@ class Lambda :isa(Term) {
     method to_string { sprintf '(lambda %s %s)' => $params->to_string, $body->to_string }
 }
 
-class Native :isa(Term) {
+class Native :isa(Callable) {
     field $name :param :reader;
     field $proc :param :reader;
 
@@ -78,6 +82,8 @@ class Native :isa(Term) {
 
     method to_string { sprintf '#<%s>' => $name }
 }
+
+## -----------------------------------------------------------------------------
 
 class Env {
     field $parent   :param :reader = undef;
@@ -101,8 +107,12 @@ class Kontinue {
         sprintf '%s > %s', __CLASS__, defined $kont ? $kont->to_string : '!!';
     }
 
-    method throw ($error) {
+    method throw_error ($error) {
         Error->new( env => $self->env, error => $error, kont => $self->kont )
+    }
+
+    method return_value ($value, $kont=undef) {
+        Return->new( env => $self->env, value => $value, kont => $kont // $self->kont )
     }
 
     our $TICKS = 0;
@@ -114,7 +124,7 @@ class Kontinue {
         foreach my ($name, $arg) (@args) {
             say sprintf '%15s : %s' =>
                 $name,
-                $arg->to_string;
+                (blessed $arg ? $arg->to_string : $arg);
         }
     }
 }
@@ -143,20 +153,12 @@ class Eval::Expr :isa(Kontinue) {
             }
             when ('Sym') {
                 my $value = $self->env->lookup($expr);
-                return $self->throw("Unable to find ${expr} in Env")
+                return $self->throw_error("Unable to find ${expr} in Env")
                     if not defined $value;
-                return Return->new(
-                    env   => $self->env,
-                    value => $value,
-                    kont  => $self->kont
-                );
+                return $self->return_value($value);
             }
             default {
-                return Return->new(
-                    env   => $self->env,
-                    value => $expr,
-                    kont  => $self->kont
-                );
+                return $self->return_value($expr);
             }
         }
     }
@@ -168,46 +170,21 @@ class Apply::Expr :isa(Kontinue) {
     method kontinue ($call) {
         $self->DEBUG(args => $args, '+call' => $call);
         if ($call->is_operative) {
-            return Return->new(
-                env   => $self->env,
-                value => $args,
-                kont  => Apply::Call->new(
+            return $self->return_value( $args,
+                Apply::Call->new(
                     env  => $self->env,
                     call => $call,
                     kont => $self->kont,
                 )
             );
-        } elsif ($args->is_nil) {
-            # nullary ops
-            return Apply::Call->new(
+        } else {
+            return Eval::Rest->new(
                 env  => $self->env,
-                call => $call,
-                kont => $self->kont,
-            );
-        } elsif ($args->tail->is_nil) {
-            # unary ops
-            return Eval::Expr->new(
-                env  => $self->env,
-                expr => $args->head,
+                rest => $args,
                 kont => Apply::Call->new(
                     env  => $self->env,
                     call => $call,
                     kont => $self->kont,
-                )
-            )
-        } else {
-            # binary & list ops
-            return Eval::Expr->new(
-                env  => $self->env,
-                expr => $args->head,
-                kont => Eval::Rest->new(
-                    env  => $self->env,
-                    rest => $args->tail,
-                    kont => Apply::Call->new(
-                        env  => $self->env,
-                        call => $call,
-                        kont => $self->kont,
-                    )
                 )
             )
         }
@@ -218,29 +195,35 @@ class Eval::Rest :isa(Kontinue) {
     field $rest :param :reader;
     field $done :param :reader = Nil->new;
 
-    method kontinue ($evaled) {
-        $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled);
-        if ($rest->is_nil) {
-            return Return->new(
-                env   => $self->env,
-                value => Cons->new( head => $evaled, tail => $done )->reverse,
-                kont  => $self->kont,
-            );
-        } else {
-            # given (blessed $rest->head)
-            #     when Literal ... skip Eval-Expr
-            # ... do this in a loop?
-            return Eval::Expr->new(
-                env  => $self->env,
-                expr => $rest->head,
-                kont => Eval::Rest->new(
-                    env  => $self->env,
-                    rest => $rest->tail,
-                    done => Cons->new( head => $evaled, tail => $done ),
-                    kont => $self->kont,
-                )
-            )
+    method kontinue ($evaled=undef) {
+        $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled // '?');
+
+        $done = Cons->new( head => $evaled, tail => $done )
+            if defined $evaled;
+
+        until ($rest->is_nil) {
+            my $next = $rest->head;
+            if ($next isa Literal) {
+                $done = Cons->new( head => $next, tail => $done );
+                $rest = $rest->tail;
+            } else {
+                last;
+            }
         }
+
+        return $self->return_value( $done->reverse )
+            if $rest->is_nil;
+
+        return Eval::Expr->new(
+            env  => $self->env,
+            expr => $rest->head,
+            kont => Eval::Rest->new(
+                env  => $self->env,
+                rest => $rest->tail,
+                done => $done,
+                kont => $self->kont,
+            )
+        );
     }
 }
 
@@ -254,23 +237,23 @@ class Apply::Call :isa(Kontinue) {
             when ('Native') {
                 my @args = $args->uncons;
                 if ($call->is_operative) {
-                    unshift @args => $self->env;
+                    return $call->proc->( $self, @args );
+                } else {
+                    return $self->return_value( $call->proc->( @args ) );
                 }
-                return Return->new(
-                    env   => $self->env,
-                    value => $call->proc->( @args ),
-                    kont  => $self->kont,
-                );
             }
             when ('Lambda') {
-                my @args = $args->uncons;
-
                 my %local;
                 my $params = $call->params;
                 until ($params->is_nil) {
-                    $local{ $params->head->ident } = pop @args;
+                    return $self->throw_error("Arity Mismatch - missing:${params}")
+                        if $args->is_nil;
+                    $local{ $params->head->ident } = $args->head;
                     $params = $params->tail;
+                    $args   = $args->tail;
                 }
+                return $self->throw_error("Arity Mismatch - additional:${args}")
+                    unless $args->is_nil;
 
                 my $local = Env->new( parent => $self->env, bindings => \%local );
 
@@ -337,7 +320,11 @@ my $env = Env->new(
 
         'lambda' => Native->new(
             name => 'lambda',
-            proc => sub ($e, $p, $b) { Lambda->new( params => $p, body => $b, env => $e ) },
+            proc => sub ($ctx, $p, $b) {
+                $ctx->return_value(
+                    Lambda->new( params => $p, body => $b, env => $ctx->env )
+                )
+            },
             is_operative => true,
         ),
     }
@@ -350,7 +337,11 @@ my $adder = cons(
     cons( sym('+'), sym('x'), sym('y') ),
 );
 
-my $expr = cons( $adder, num(10), num(20) );
+my $expr = cons(
+    $adder,
+    num(10),
+    cons( sym('*'), num(4), num(5) ),
+);
 
 say $expr;
 
