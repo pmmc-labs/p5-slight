@@ -35,6 +35,16 @@ class Cons :isa(Term) {
     field $head :param :reader;
     field $tail :param :reader;
 
+    sub of ($, @args) {
+        my $list = Nil->new;
+        while (@args) {
+            $list = Cons->new( head => (pop @args), tail => $list );
+        }
+        return $list;
+    }
+
+    method reverse { Cons->of( reverse $self->uncons ) }
+
     method uncons {
         my @list;
         my $l = $self;
@@ -78,22 +88,6 @@ class Env {
             // (defined $parent ? $parent->lookup($sym) : undef);
     }
 }
-
-## -----------------------------------------------------------------------------
-
-sub sym ($i) { Sym->new( ident => $i ) }
-sub num ($n) { Num->new(   raw => $n ) }
-sub str ($s) { Str->new(   raw => $s ) }
-
-sub cons (@args) {
-    my $list = Nil->new;
-    while (@args) {
-        $list = Cons->new( head => (pop @args), tail => $list );
-    }
-    return $list;
-}
-
-sub append ($l, $r) { cons( $l->uncons, $r->uncons ) }
 
 ## -----------------------------------------------------------------------------
 
@@ -167,9 +161,7 @@ class Apply::Expr :isa(Kontinue) {
                 env  => $self->env,
                 call => $call,
                 kont => $self->kont,
-            )->kontinue(
-                $args->uncons
-            );
+            )->kontinue( $args );
         } elsif ($args->is_nil) {
             # nullary ops
             return Apply::Call->new(
@@ -216,7 +208,7 @@ class Eval::Rest :isa(Kontinue) {
         $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled);
         if ($rest->is_nil) {
             return $self->kont->kontinue(
-                Cons->new( head => $evaled, tail => $done )
+                Cons->new( head => $evaled, tail => $done )->reverse
             );
         } else {
             # given (blessed $rest->head)
@@ -244,14 +236,14 @@ class Apply::Call :isa(Kontinue) {
 
         given (blessed $call) {
             when ('Native') {
-                my @args = reverse $args->uncons;
+                my @args = $args->uncons;
                 if ($call->is_operative) {
                     unshift @args => $self->env;
                 }
                 return $self->kont->kontinue( $call->proc->( @args ) );
             }
             when ('Lambda') {
-                my @args = reverse $args->uncons;
+                my @args = $args->uncons;
 
                 my %local;
                 my $params = $call->params;
@@ -304,6 +296,14 @@ class Halt :isa(Kontinue) {
         return undef;
     }
 }
+
+## -----------------------------------------------------------------------------
+
+sub sym ($i) { Sym->new( ident => $i ) }
+sub num ($n) { Num->new(   raw => $n ) }
+sub str ($s) { Str->new(   raw => $s ) }
+
+sub cons (@args) { Cons->of(@args) }
 
 ## -----------------------------------------------------------------------------
 
