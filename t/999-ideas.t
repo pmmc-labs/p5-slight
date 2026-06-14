@@ -103,10 +103,6 @@ class Kontinue {
     field $env  :param :reader;
     field $kont :param :reader = undef;
 
-    method to_string {
-        sprintf '%s > %s', __CLASS__, defined $kont ? $kont->to_string : '!!';
-    }
-
     method throw_error ($error) {
         Error->new( env => $self->env, error => $error, kont => $self->kont )
     }
@@ -115,10 +111,15 @@ class Kontinue {
         Return->new( env => $self->env, value => $value, kont => $kont // $self->kont )
     }
 
+    method to_string {
+        return sprintf '%s!!', __CLASS__ if not defined $kont;
+        return sprintf '%s > %s', __CLASS__, $kont->to_string;
+    }
+
     our $TICKS = 0;
     method DEBUG (@args) {
         say '-' x 120;
-        say sprintf '=> %-12s : %-87s   %12s' => __CLASS__, $self->kont // '!!', (caller(1))[0], ;
+        say sprintf '=> %-12s : %s' => __CLASS__, $self->kont // '!!';
         $TICKS++;
         say '-' x 120;
         foreach my ($name, $arg) (@args) {
@@ -201,14 +202,13 @@ class Eval::Rest :isa(Kontinue) {
         $done = Cons->new( head => $evaled, tail => $done )
             if defined $evaled;
 
+        # Literals do not need to be evaled
+        # so we can look for any pending ones
+        # and put the in done already
         until ($rest->is_nil) {
-            my $next = $rest->head;
-            if ($next isa Literal) {
-                $done = Cons->new( head => $next, tail => $done );
-                $rest = $rest->tail;
-            } else {
-                last;
-            }
+            last unless $rest->head isa Literal;
+            $done = Cons->new( head => $rest->head, tail => $done );
+            $rest = $rest->tail;
         }
 
         return $self->return_value( $done->reverse )
@@ -306,6 +306,8 @@ sub str ($s) { Str->new(   raw => $s ) }
 
 sub cons (@args) { Cons->of(@args) }
 
+sub lambda ($params, $body) { cons(sym('lambda'), cons(@$params), cons(@$body)) }
+
 ## -----------------------------------------------------------------------------
 
 my $env = Env->new(
@@ -331,16 +333,12 @@ my $env = Env->new(
 );
 
 
-my $adder = cons(
-    sym('lambda'),
-    cons( sym('x'), sym('y') ),
-    cons( sym('+'), sym('x'), sym('y') ),
-);
+my $adder = lambda([ sym('x'), sym('y') ], [ sym('+'), sym('x'), sym('y') ]);
 
 my $expr = cons(
     $adder,
     num(10),
-    cons( sym('*'), num(4), num(5) ),
+    cons( sym('*'), num(4), cons($adder, num(3), num(2) )),
 );
 
 say $expr;
