@@ -55,7 +55,14 @@ class Literal :isa(Term) {}
 
 class Str  :isa(Literal) {field $raw :param :reader; method to_string { $raw }}
 class Num  :isa(Literal) {field $raw :param :reader; method to_string { "${raw}" }}
-class Bool :isa(Literal) {field $raw :param :reader; method to_string { $raw ? 'true' : 'false' }}
+class Bool :isa(Literal) {
+    field $raw :param :reader;
+
+    sub TRUE  { Bool->new( raw => true ) }
+    sub FALSE { Bool->new( raw => false ) }
+
+    method to_string { $raw ? 'true' : 'false' }
+}
 
 class Callable :isa(Literal) {
     method is_operative   { ... }
@@ -361,33 +368,84 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
-sub sym ($i) { Sym->new( ident => $i ) }
-sub num ($n) { Num->new(   raw => $n ) }
-sub str ($s) { Str->new(   raw => $s ) }
+class Parser {
+    field @stack;
 
-sub TRUE  { Bool->new( raw => true  ) }
-sub FALSE { Bool->new( raw => false ) }
+    ADJUST {
+        push @stack => +[];
+    }
 
-sub cons (@args) { Cons->of(@args) }
+    method tokenizer ($source) {
+        if ($source =~ /\;/) {
+            $source =~ s/\;.*\n//g;
+        }
+        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
+    }
 
-sub lambda ($params, $body) { cons(sym('lambda'), cons(@$params), cons(@$body)) }
+    method parse ($source) {
+        my @tokens = $self->tokenizer($source);
+        while (@tokens) {
+            my $token = shift @tokens;
+            if ($token =~ /^\'[^\(]/) {
+                $token =~ s/^\'//;
+                push @stack => +[ Sym->new(ident => 'quote' ) ];
+                unshift @tokens => ')';
+            }
+
+            given ($token) {
+                when ('\'(') {
+                    push @stack => +[ Sym->new(ident => 'quote' ) ];
+                }
+                when ('(') {
+                    push @stack => +[];
+                }
+                when (')') {
+                    my $list = pop @stack;
+                    push $stack[-1]->@*, (scalar $list->@* > 0)
+                        ? Cons->of( $list->@* )
+                        : Nil->new;
+                }
+                when (/^\"/) {
+                    push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) );
+                }
+                when (/^\d+$/) {
+                    push $stack[-1]->@*, Num->new( raw => $token+0 );
+                }
+                when ('nil') {
+                    push $stack[-1]->@*, Nil->new;
+                }
+                when ('true') {
+                    push $stack[-1]->@*, Bool->TRUE;
+                }
+                when ('false') {
+                    push $stack[-1]->@*, Bool->FALSE;
+                }
+                default {
+                    push $stack[-1]->@*, Sym->new( ident => $token );
+                }
+            }
+        }
+        return $stack[-1]->@*;
+    }
+
+}
 
 ## -----------------------------------------------------------------------------
 
 my $env = Env->new(
     bindings => +{
-        '+' => Native->new( name => '+', proc => sub ($n, $m) { num($n->raw + $m->raw) }),
-        '-' => Native->new( name => '-', proc => sub ($n, $m) { num($n->raw - $m->raw) }),
-        '*' => Native->new( name => '*', proc => sub ($n, $m) { num($n->raw * $m->raw) }),
-        '/' => Native->new( name => '/', proc => sub ($n, $m) { num($n->raw / $m->raw) }),
-        '%' => Native->new( name => '%', proc => sub ($n, $m) { num($n->raw % $m->raw) }),
+        '+' => Native->new( name => '+', proc => sub ($n, $m) { Num->new( raw => $n->raw + $m->raw ) }),
+        '-' => Native->new( name => '-', proc => sub ($n, $m) { Num->new( raw => $n->raw - $m->raw ) }),
+        '*' => Native->new( name => '*', proc => sub ($n, $m) { Num->new( raw => $n->raw * $m->raw ) }),
+        '/' => Native->new( name => '/', proc => sub ($n, $m) { Num->new( raw => $n->raw / $m->raw ) }),
+        '%' => Native->new( name => '%', proc => sub ($n, $m) { Num->new( raw => $n->raw % $m->raw ) }),
 
-        '==' => Native->new( name => '==', proc => sub ($n, $m) { $n->raw == $m->raw ? TRUE : FALSE }),
-        '!=' => Native->new( name => '!=', proc => sub ($n, $m) { $n->raw != $m->raw ? TRUE : FALSE }),
-        '<=' => Native->new( name => '<=', proc => sub ($n, $m) { $n->raw <= $m->raw ? TRUE : FALSE }),
-        '>=' => Native->new( name => '>=', proc => sub ($n, $m) { $n->raw >= $m->raw ? TRUE : FALSE }),
-        '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? TRUE : FALSE }),
-        '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? TRUE : FALSE }),
+        '==' => Native->new( name => '==', proc => sub ($n, $m) { $n->raw == $m->raw ? Bool->TRUE : Bool->FALSE }),
+        '!=' => Native->new( name => '!=', proc => sub ($n, $m) { $n->raw != $m->raw ? Bool->TRUE : Bool->FALSE }),
+        '<=' => Native->new( name => '<=', proc => sub ($n, $m) { $n->raw <= $m->raw ? Bool->TRUE : Bool->FALSE }),
+        '>=' => Native->new( name => '>=', proc => sub ($n, $m) { $n->raw >= $m->raw ? Bool->TRUE : Bool->FALSE }),
+        '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
+        '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
 
         'lambda' => Native->new(
             name => 'lambda',
@@ -409,12 +467,14 @@ my $env = Env->new(
     }
 );
 
+my $parser = Parser->new;
 my $strand = Strand->new;
 
-say join "\n" => $strand->run(
-    $env,
-    cons( sym('if'), F(), num(10), num(20) )
-);
+my ($expr) = $parser->parse(q[
+    ((lambda (x y) (+ x y)) 10 20)
+]);
+
+say join "\n" => $strand->run( $env, $expr );
 
 
 
