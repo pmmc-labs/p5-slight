@@ -111,16 +111,27 @@ class Kontinue {
         Return->new( env => $self->env, value => $value, kont => $kont // $self->kont )
     }
 
+    method conditional ($condition, $if_true, $if_false) {
+        Eval::Expr->new(
+            env  => $self->env,
+            expr => $condition,
+            kont => Cond->new(
+                env      => $self->env,
+                if_true  => $if_true,
+                if_false => $if_false,
+                kont     => $self->kont,
+            )
+        )
+    }
+
     method to_string {
         return sprintf '%s!!', __CLASS__ if not defined $kont;
         return sprintf '%s > %s', __CLASS__, $kont->to_string;
     }
 
-    our $TICKS = 0;
     method DEBUG (@args) {
         say '-' x 120;
         say sprintf '=> %-12s : %s' => __CLASS__, $self->kont // '!!';
-        $TICKS++;
         say '-' x 120;
         foreach my ($name, $arg) (@args) {
             say sprintf '%15s : %s' =>
@@ -270,6 +281,19 @@ class Apply::Call :isa(Kontinue) {
     }
 }
 
+class Cond :isa(Kontinue) {
+    field $if_true  :param :reader;
+    field $if_false :param :reader;
+
+    method kontinue ($condition) {
+        return Eval::Expr->new(
+            env  => $self->env,
+            expr => ($condition->raw ? $if_true : $if_false),
+            kont => $self->kont,
+        )
+    }
+}
+
 class Return :isa(Kontinue) {
     field $value :param :reader;
 
@@ -300,9 +324,49 @@ class Halt :isa(Kontinue) {
 
 ## -----------------------------------------------------------------------------
 
+class Strand {
+    field $step = 0;
+    field @trace;
+
+    method compile ($env, $expr) {
+        return Eval::Expr->new(
+            env  => $env,
+            expr => $expr,
+            kont => Halt->new( env => $env )
+        )
+    }
+
+    method run ($env, $expr) {
+        my $kont = $self->compile($env, $expr);
+        while (true) {
+            push @trace => $kont;
+            $kont = $self->step($kont);
+            last if not defined $kont;
+        }
+        return @trace;
+    }
+
+    method step ($kont) {
+        $step++;
+        given (blessed $kont) {
+            when ('Return') {
+                return $kont->kont->kontinue( $kont->value );
+            }
+            default {
+                return $kont->kontinue;
+            }
+        }
+    }
+}
+
+## -----------------------------------------------------------------------------
+
 sub sym ($i) { Sym->new( ident => $i ) }
 sub num ($n) { Num->new(   raw => $n ) }
 sub str ($s) { Str->new(   raw => $s ) }
+
+sub TRUE  { Bool->new( raw => true  ) }
+sub FALSE { Bool->new( raw => false ) }
 
 sub cons (@args) { Cons->of(@args) }
 
@@ -318,7 +382,12 @@ my $env = Env->new(
         '/' => Native->new( name => '/', proc => sub ($n, $m) { num($n->raw / $m->raw) }),
         '%' => Native->new( name => '%', proc => sub ($n, $m) { num($n->raw % $m->raw) }),
 
-        'ten' => Native->new( name => 'ten', proc => sub () { num(10) }),
+        '==' => Native->new( name => '==', proc => sub ($n, $m) { $n->raw == $m->raw ? TRUE : FALSE }),
+        '!=' => Native->new( name => '!=', proc => sub ($n, $m) { $n->raw != $m->raw ? TRUE : FALSE }),
+        '<=' => Native->new( name => '<=', proc => sub ($n, $m) { $n->raw <= $m->raw ? TRUE : FALSE }),
+        '>=' => Native->new( name => '>=', proc => sub ($n, $m) { $n->raw >= $m->raw ? TRUE : FALSE }),
+        '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? TRUE : FALSE }),
+        '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? TRUE : FALSE }),
 
         'lambda' => Native->new(
             name => 'lambda',
@@ -329,45 +398,24 @@ my $env = Env->new(
             },
             is_operative => true,
         ),
+
+        'if' => Native->new(
+            name => 'if',
+            proc => sub ($ctx, $condition, $if_true, $if_false) {
+                $ctx->conditional( $condition, $if_true, $if_false )
+            },
+            is_operative => true,
+        ),
     }
 );
 
+my $strand = Strand->new;
 
-my $adder = lambda([ sym('x'), sym('y') ], [ sym('+'), sym('x'), sym('y') ]);
-
-my $expr = cons(
-    $adder,
-    num(10),
-    cons( sym('*'), num(4), cons($adder, num(3), num(2) )),
+say join "\n" => $strand->run(
+    $env,
+    cons( sym('if'), F(), num(10), num(20) )
 );
 
-say $expr;
-
-my $epoch = 0;
-my $halt = Halt->new( env => $env );
-my $next = Eval::Expr->new( env => $env, expr => $expr, kont => $halt );
-while (defined $next) {
-    $epoch++;
-    given (blessed $next) {
-        when ('Return') {
-            $next = $next->kont->kontinue( $next->value );
-        }
-        when ('Error') {
-            $next = $next->kontinue; # good enough for now
-        }
-        when ('Halt') {
-            $next = $next->kontinue; # good enough for now
-        }
-        default {
-            $next = $next->kontinue;
-        }
-    }
-    #say ">>>>>>>[${epoch}]> ", $next;
-}
-say '-' x 120;
-say "  TICKS: ", $Kontinue::TICKS;
-say " EPOCHS: ", $epoch;
-say '-' x 120;
 
 
 
@@ -390,33 +438,3 @@ say '-' x 120;
 
 
 
-
-
-
-__END__
-
-
-class Eval::Head :isa(Kontinue) {
-    field $head :param :reader;
-    field $rest :param :reader;
-
-    # 2a. creates Apply-Expr with unevaled $rest
-    # 2b. evaluates $head and returns it to Apply-Expr
-    method kontinue {
-        say '-' x 120;
-        say sprintf '=> %-12s : %-12s : %s' => __CLASS__, (caller)[0], $self->kont;
-        $Kontinue::tick++;
-        say '-' x 120;
-        say "  head: ${head}";
-        say "  rest: ${rest}";
-        Eval::Expr->new(
-            env  => $self->env,
-            expr => $head,
-            kont => Apply::Expr->new(
-                env  => $self->env,
-                args => $rest,
-                kont => $self->kont,
-            )
-        )
-    }
-}
