@@ -41,7 +41,7 @@ class Parser {
                 }
             }
         }
-        return $stack[-1]->@*;
+        return $stack[-1];
     }
 }
 
@@ -304,7 +304,7 @@ class Apply::Call :isa(Kontinue) {
                     unless $args->is_nil;
 
                 return Scope::Enter->new(
-                    env  => $call->env->derive( \%local ),
+                    env  => $call->env->derive( %local ),
                     kont => Eval::Expr->new(
                         expr => $call->body,
                         kont => Scope::Leave->new(
@@ -364,6 +364,13 @@ class Return :isa(Kontinue) {
     method kontinue ($ctx) {
         $self->DEBUG('value' => $value);
         return $value;
+    }
+}
+
+class Drop :isa(Kontinue) {
+    method kontinue ($ctx, $dropped) {
+        $self->DEBUG('-dropped' => $dropped);
+        return $self->kont;
     }
 }
 
@@ -458,25 +465,24 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
-    method kompile ($env, @exprs) {
-        my $expr;
-        while (@exprs) {
-            return Scope::Enter->new(
-                env => $env,
-                kont => Eval::Expr->new(
-                    expr => $expr,
-                    kont => Scope::Leave->new(
-                        kont =>
-                    )
-                )
-            )
+    method kompile ($env, $exprs) {
+        my @exprs = reftype $exprs eq 'ARRAY' ? @$exprs : $exprs;
+        my $kont  = Scope::Leave->new( kont => Halt->new );
+        foreach my $expr (reverse @$exprs) {
+            $kont = Eval::Expr->new(
+                expr => $expr,
+                kont => ($kont isa Scope::Leave)
+                    ? $kont
+                    : Drop->new( kont => $kont )
+            );
         }
+        return Scope::Enter->new( env => $env, kont => $kont );
     }
 
     ## -------------------------------------------------------------------------
 
-    method run ($env, $expr) {
-        $self->execute( $self->kompile($env, $expr) );
+    method run ($env, $exprs) {
+        $self->execute( $self->kompile( $env, $exprs ) );
     }
 
     method execute ($kont) {
@@ -576,17 +582,19 @@ my $env = Env->new(
 my $parser = Parser->new;
 my $strand = Strand->new;
 
-my @exprs = $parser->parse(q[
+my $exprs = $parser->parse(q[
     (defun fact (n)
-        (if (== n 0) n
+        (if (== n 0) 1
             (* n (fact (- n 1)))))
 
-    (fact 6)
+    (let x (fact 6))
+
+    x
 ]);
 
-say $_ foreach @exprs;
-
-#say join "\n" => $strand->run( $env, $expr );
+say $_ foreach @$exprs;
+#say join "\n" =>
+$strand->run( $env, $exprs );
 
 
 
