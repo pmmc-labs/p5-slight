@@ -189,17 +189,29 @@ class Eval::Expr :isa(Kontinue) {
 
         given (blessed $expr) {
             when ('Cons') {
-                # given (blessed $expr->head)
-                #   when Sym      -> resolve it and jump to Apply-Expr
-                #   when Callable -> create Apply-Expr and call ->kontinue(Calleble)
-                # ...
-                return Eval::Expr->new(
-                    expr => $expr->head,
-                    kont => Apply::Expr->new(
-                        args => $expr->tail,
-                        kont => $self->kont,
-                    )
-                )
+                given (blessed $expr->head) {
+                    when ('Sym') {
+                        my $value = $ctx->lookup( $expr->head );
+                        return $ctx->throw_error("Unable to call ".$expr->head.", not in Env", $self)
+                            if not defined $value;
+                        return $ctx->return_value(
+                            $value,
+                            Apply::Expr->new(
+                                args => $expr->tail,
+                                kont => $self->kont,
+                            )
+                        )
+                    }
+                    default {
+                        return Eval::Expr->new(
+                            expr => $expr->head,
+                            kont => Apply::Expr->new(
+                                args => $expr->tail,
+                                kont => $self->kont,
+                            )
+                        )
+                    }
+                }
             }
             when ('Sym') {
                 my $value = $ctx->lookup($expr);
@@ -257,6 +269,7 @@ class Eval::Rest :isa(Kontinue) {
             $rest = $rest->tail;
         }
 
+        # if no more left, return it
         return $ctx->return_value( $done->reverse, $self->kont )
             if $rest->is_nil;
 
@@ -425,22 +438,25 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
+    method prev_kont { $trace[-1] }
+    method next_kont { $trace[-1]->kont }
+
     method bind ($name, $expr, $kont=undef) {
         Eval::Expr->new(
             expr => $expr,
             kont => Bind->new(
                 name => $name,
-                kont => $kont // $trace[-1]->kont
+                kont => $kont // $self->next_kont($kont)
             )
         )
     }
 
     method throw_error ($error, $kont=undef) {
-        Error->new( error => $error, kont => $kont // $trace[-1]->kont )
+        Error->new( error => $error, kont => $kont // $self->next_kont($kont) )
     }
 
     method return_value ($value, $kont=undef) {
-        Return->new( value => $value, kont => $kont // $trace[-1]->kont )
+        Return->new( value => $value, kont => $kont // $self->next_kont($kont) )
     }
 
     method conditional ($condition, $if_true, $if_false, $kont=undef) {
@@ -449,7 +465,7 @@ class Strand {
             kont => Cond->new(
                 if_true  => $if_true,
                 if_false => $if_false,
-                kont     => $kont // $trace[-1]->kont,
+                kont     => $kont // $self->next_kont($kont),
             )
         )
     }
@@ -458,7 +474,7 @@ class Strand {
         Yield->new(
             kont => Eval::Expr->new(
                 expr => $expr,
-                kont => $kont // $trace[-1]->kont
+                kont => $kont // $self->next_kont($kont)
             )
         )
     }
@@ -494,10 +510,9 @@ class Strand {
     }
 
     method resume {
-        return $self->execute( $trace[-1]->kont ) if $trace[-1] isa Yield;
+        return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
         return $self->execute( $self->throw_error(
-            "You can only resume from a Yield, not ".$trace[-1],
-            $trace[-1]
+            "You can only resume from a Yield, not ".$self->prev_kont,
         ));
     }
 
@@ -583,18 +598,25 @@ my $parser = Parser->new;
 my $strand = Strand->new;
 
 my $exprs = $parser->parse(q[
-    (defun fact (n)
-        (if (== n 0) 1
-            (* n (fact (- n 1)))))
 
-    (let x (fact 6))
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
 
-    x
+(defun fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 2)) (fib (- n 1)))))
+
+
+(fact (fib 6)) ;; 40320
+
 ]);
 
 say $_ foreach @$exprs;
 #say join "\n" =>
 $strand->run( $env, $exprs );
+
+
 
 
 
