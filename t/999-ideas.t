@@ -181,6 +181,44 @@ class Kontinue {
     }
 }
 
+class Accumulator :isa(Kontinue) {
+    field $rest :param :reader;
+    field $done :param :reader = Nil->new;
+
+    method next ($todo, $kont) { ... }
+
+    method kontinue ($ctx, $value=undef) {
+        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?');
+
+        $done = Cons->new( head => $value, tail => $done )
+            if defined $value;
+
+        # Literals do not need to be evaled
+        # so we can look for any pending ones
+        # and put the in done already
+        until ($rest->is_nil) {
+            last unless $rest->head isa Literal;
+            $done = Cons->new( head => $rest->head, tail => $done );
+            $rest = $rest->tail;
+        }
+
+        # if no more left, return it
+        return $ctx->return_value( $done->reverse, $self->kont )
+            if $rest->is_nil;
+
+        return $self->next(
+            $rest->head,
+            __CLASS__->new(
+                rest => $rest->tail,
+                done => $done,
+                kont => $self->kont,
+            )
+        );
+    }
+}
+
+## -----------------------------------------------------------------------------
+
 class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
@@ -190,27 +228,13 @@ class Eval::Expr :isa(Kontinue) {
         given (blessed $expr) {
             when ('Cons') {
                 given (blessed $expr->head) {
-                    when ('Sym') {
-                        my $value = $ctx->lookup( $expr->head );
-                        return $ctx->throw_error("Unable to call ".$expr->head.", not in Env", $self)
-                            if not defined $value;
-                        return $ctx->return_value(
-                            $value,
-                            Apply::Expr->new(
-                                args => $expr->tail,
-                                kont => $self->kont,
-                            )
+                    return Eval::Expr->new(
+                        expr => $expr->head,
+                        kont => Apply::Expr->new(
+                            args => $expr->tail,
+                            kont => $self->kont,
                         )
-                    }
-                    default {
-                        return Eval::Expr->new(
-                            expr => $expr->head,
-                            kont => Apply::Expr->new(
-                                args => $expr->tail,
-                                kont => $self->kont,
-                            )
-                        )
-                    }
+                    )
                 }
             }
             when ('Sym') {
@@ -250,37 +274,9 @@ class Apply::Expr :isa(Kontinue) {
     }
 }
 
-class Eval::Rest :isa(Kontinue) {
-    field $rest :param :reader;
-    field $done :param :reader = Nil->new;
-
-    method kontinue ($ctx, $evaled=undef) {
-        $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled // '?');
-
-        $done = Cons->new( head => $evaled, tail => $done )
-            if defined $evaled;
-
-        # Literals do not need to be evaled
-        # so we can look for any pending ones
-        # and put the in done already
-        until ($rest->is_nil) {
-            last unless $rest->head isa Literal;
-            $done = Cons->new( head => $rest->head, tail => $done );
-            $rest = $rest->tail;
-        }
-
-        # if no more left, return it
-        return $ctx->return_value( $done->reverse, $self->kont )
-            if $rest->is_nil;
-
-        return Eval::Expr->new(
-            expr => $rest->head,
-            kont => Eval::Rest->new(
-                rest => $rest->tail,
-                done => $done,
-                kont => $self->kont,
-            )
-        );
+class Eval::Rest :isa(Accumulator) {
+    method next ($todo, $kont) {
+        return Eval::Expr->new( expr => $todo, kont => $kont );
     }
 }
 
@@ -376,7 +372,7 @@ class Return :isa(Kontinue) {
 
     method kontinue ($ctx) {
         $self->DEBUG('value' => $value);
-        return $value;
+        return $self->kont;
     }
 }
 
