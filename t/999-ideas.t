@@ -353,9 +353,9 @@ class Scope::Enter :isa(Kontinue) {
 }
 
 class Scope::Leave :isa(Kontinue) {
-    method kontinue {
-        $self->DEBUG;
-        return $self->kont;
+    method kontinue ($result) {
+        $self->DEBUG('+result' => $result);
+        return $self->return_value( $result );
     }
 }
 
@@ -433,21 +433,24 @@ class Strand {
 
     method execute ($kont) {
         while (defined $kont) {
+            push @trace => $kont;
             $kont = $self->step($kont);
-            push @trace => $kont if defined $kont;
         }
         return @trace;
     }
 
     method resume {
-        # TODO - make sure it is a yield
-        return $self->execute( $trace[-1]->kont );
+        return $self->execute( $trace[-1]->kont ) if $trace[-1] isa Yield;
+        return $self->execute( $trace[-1]->throw_error(
+            "You can only resume from a Yield, not ".$trace[-1]
+        ));
     }
 
     method step ($kont) {
         $step++;
         given (blessed $kont) {
             when ('Return') {
+                push @trace => $kont->kont;
                 return $kont->kont->kontinue( $kont->value );
             }
             default {
@@ -504,13 +507,12 @@ my $parser = Parser->new;
 my $strand = Strand->new;
 
 my ($expr) = $parser->parse(q[
-    (+ 10 20)
+    (+ 10 (yield (yield 20)))
 ]);
 
 say join "\n" => $strand->run( $env, $expr );
 say join "\n" => $strand->resume;
 say join "\n" => $strand->resume;
-
 
 
 
