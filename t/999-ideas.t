@@ -71,9 +71,8 @@ class Cons :isa(List) {
 
     sub of ($, @args) {
         my $list = Nil->new;
-        while (@args) {
-            $list = Cons->new( head => (pop @args), tail => $list );
-        }
+        $list = Cons->new( head => (pop @args), tail => $list )
+            while @args;
         return $list;
     }
 
@@ -94,12 +93,12 @@ class Cons :isa(List) {
 
 class Literal :isa(Term) {}
 
-class Str  :isa(Literal) {
+class Str :isa(Literal) {
     field $raw :param :reader;
     method to_string { $raw }
 }
 
-class Num  :isa(Literal) {
+class Num :isa(Literal) {
     field $raw :param :reader;
     method to_string { "${raw}" }
 }
@@ -346,6 +345,20 @@ class Apply::Call :isa(Kontinue) {
     }
 }
 
+class Scope::Enter :isa(Kontinue) {
+    method kontinue {
+        $self->DEBUG;
+        return $self->kont;
+    }
+}
+
+class Scope::Leave :isa(Kontinue) {
+    method kontinue {
+        $self->DEBUG;
+        return $self->kont;
+    }
+}
+
 class Cond :isa(Kontinue) {
     field $if_true  :param :reader;
     field $if_false :param :reader;
@@ -370,7 +383,7 @@ class Return :isa(Kontinue) {
 
 class Yield :isa(Kontinue) {
     method kontinue {
-        $self->DEBUG();
+        $self->DEBUG;
         return undef;
     }
 }
@@ -401,10 +414,16 @@ class Strand {
     field @trace;
 
     method kompile ($env, $expr) {
-        return Eval::Expr->new(
-            env  => $env,
-            expr => $expr,
-            kont => Halt->new( env => $env )
+        return Scope::Enter->new(
+            env => $env,
+            kont => Eval::Expr->new(
+                env  => $env,
+                expr => $expr,
+                kont => Scope::Leave->new(
+                    env  => $env,
+                    kont => Halt->new( env => $env )
+                )
+            )
         )
     }
 
@@ -485,7 +504,7 @@ my $parser = Parser->new;
 my $strand = Strand->new;
 
 my ($expr) = $parser->parse(q[
-    (+ (yield 10) (yield 20))
+    (+ 10 20)
 ]);
 
 say join "\n" => $strand->run( $env, $expr );
