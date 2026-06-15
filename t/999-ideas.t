@@ -186,20 +186,39 @@ class Kontinue {
 class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
-    method kontinue ($ctx) {
-        $self->DEBUG(expr => $expr);
-
+    method jit ($ctx) {
         given (blessed $expr) {
             when ('Cons') {
                 given (blessed $expr->head) {
-                    return Eval::Expr->new(
-                        expr => $expr->head,
-                        kont => Apply::Expr->new(
-                            args => $expr->tail,
-                            kont => $self->kont,
-                        )
-                    )
+                    when ('Sym') {
+                        if (my $found = $ctx->lookup( $expr->head )) {
+                            return $ctx->return_value(
+                                $found,
+                                Apply::Expr->new(
+                                    args => $expr->tail,
+                                    kont => $self->kont,
+                                )
+                            )
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    method kontinue ($ctx) {
+        $self->DEBUG(expr => $expr);
+        if (my $jit = $self->jit($ctx)) { return $jit }
+
+        given (blessed $expr) {
+            when ('Cons') {
+                return Eval::Expr->new(
+                    expr => $expr->head,
+                    kont => Apply::Expr->new(
+                        args => $expr->tail,
+                        kont => $self->kont,
+                    )
+                )
             }
             when ('Sym') {
                 my $value = $ctx->lookup($expr);
@@ -217,8 +236,20 @@ class Eval::Expr :isa(Kontinue) {
 class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
+    method jit ($ctx, $call) {
+        return unless $call->is_applicative;
+        if ($args->is_nil) {
+            return Apply::Call->new(
+                call => $call,
+                kont => $self->kont,
+            )
+        }
+    }
+
     method kontinue ($ctx, $call) {
         $self->DEBUG(args => $args, '+call' => $call);
+        if (my $jit = $self->jit($ctx, $call)) { return $jit }
+
         if ($call->is_operative) {
             return $ctx->return_value( $args,
                 Apply::Call->new(
@@ -227,7 +258,7 @@ class Apply::Expr :isa(Kontinue) {
                 )
             );
         } else {
-            return Eval::Rest->new(
+            return Eval::Args->new(
                 rest => $args,
                 kont => Apply::Call->new(
                     call => $call,
@@ -238,15 +269,12 @@ class Apply::Expr :isa(Kontinue) {
     }
 }
 
-class Eval::Rest :isa(Kontinue) {
+class Eval::Args :isa(Kontinue) {
     field $rest :param :reader;
     field $done :param :reader = Nil->new;
 
-    method kontinue ($ctx, $value=undef) {
-        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?');
-
-        $done = Cons->new( head => $value, tail => $done )
-            if defined $value;
+    method jit ($ctx, $value=undef) {
+        return if defined $value;
 
         # Literals do not need to be evaled
         # so we can look for any pending ones
@@ -260,10 +288,22 @@ class Eval::Rest :isa(Kontinue) {
         # if no more left, return it
         return $ctx->return_value( $done->reverse, $self->kont )
             if $rest->is_nil;
+    }
+
+    method kontinue ($ctx, $value=undef) {
+        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?');
+        if (my $jit = $self->jit($ctx, $value)) { return $jit }
+
+        $done = Cons->new( head => $value, tail => $done )
+            if defined $value;
+
+        # if no more left, return it
+        return $ctx->return_value( $done->reverse, $self->kont )
+            if $rest->is_nil;
 
         return Eval::Expr->new(
             expr => $rest->head,
-            kont => Eval::Rest->new(
+            kont => Eval::Args->new(
                 rest => $rest->tail,
                 done => $done,
                 kont => $self->kont,
@@ -596,13 +636,13 @@ my $exprs = $parser->parse(q[
         (+ (fib (- n 2)) (fib (- n 1)))))
 
 
-(fact (fib 6)) ;; 40320
+(fact 6) ;; 40320
 
 ]);
 
 say $_ foreach @$exprs;
 #say join "\n" =>
-$strand->run( $env, $exprs );
+say scalar $strand->run( $env, $exprs );
 
 
 
