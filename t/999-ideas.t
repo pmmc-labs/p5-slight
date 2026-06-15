@@ -3,6 +3,47 @@ use v5.42;
 use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
+## -----------------------------------------------------------------------------
+
+class Parser {
+    field @stack = (+[]);
+
+    method tokenizer ($source) {
+        $source =~ s/\;.*\n//g if $source =~ /\;/;
+        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
+    }
+
+    method parse ($source) {
+        my @tokens = $self->tokenizer($source);
+        while (@tokens) {
+            my $token = shift @tokens;
+            if ($token =~ /^\'[^\(]/) {
+                $token =~ s/^\'//;
+                push @stack => +[ Sym->new(ident => 'quote' ) ];
+                unshift @tokens => ')';
+            }
+            given ($token) {
+                when (/^\"/)   { push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) ); }
+                when (/^\d+$/) { push $stack[-1]->@*, Num->new( raw => $token+0 ); }
+                when ('nil')   { push $stack[-1]->@*, Nil->new; }
+                when ('true')  { push $stack[-1]->@*, Bool->TRUE; }
+                when ('false') { push $stack[-1]->@*, Bool->FALSE; }
+                when ('\'(')   { push @stack => +[ Sym->new(ident => 'quote' ) ]; }
+                when ('(')     { push @stack => +[]; }
+                when (')')     {
+                    my $list = pop @stack;
+                    push $stack[-1]->@*, (scalar $list->@* > 0)
+                        ? Cons->of( $list->@* )
+                        : Nil->new;
+                }
+                default {
+                    push $stack[-1]->@*, Sym->new( ident => $token );
+                }
+            }
+        }
+        return $stack[-1]->@*;
+    }
+}
 
 ## -----------------------------------------------------------------------------
 
@@ -53,14 +94,20 @@ class Cons :isa(List) {
 
 class Literal :isa(Term) {}
 
-class Str  :isa(Literal) {field $raw :param :reader; method to_string { $raw }}
-class Num  :isa(Literal) {field $raw :param :reader; method to_string { "${raw}" }}
+class Str  :isa(Literal) {
+    field $raw :param :reader;
+    method to_string { $raw }
+}
+
+class Num  :isa(Literal) {
+    field $raw :param :reader;
+    method to_string { "${raw}" }
+}
+
 class Bool :isa(Literal) {
     field $raw :param :reader;
-
     sub TRUE  { Bool->new( raw => true ) }
     sub FALSE { Bool->new( raw => false ) }
-
     method to_string { $raw ? 'true' : 'false' }
 }
 
@@ -127,6 +174,17 @@ class Kontinue {
                 if_true  => $if_true,
                 if_false => $if_false,
                 kont     => $self->kont,
+            )
+        )
+    }
+
+    method yield ($expr) {
+        Yield->new(
+            env  => $self->env,
+            kont => Eval::Expr->new(
+                env  => $self->env,
+                expr => $expr,
+                kont => $self->kont
             )
         )
     }
@@ -310,6 +368,13 @@ class Return :isa(Kontinue) {
     }
 }
 
+class Yield :isa(Kontinue) {
+    method kontinue {
+        $self->DEBUG();
+        return undef;
+    }
+}
+
 class Error :isa(Kontinue) {
     field $error :param :reader;
 
@@ -335,7 +400,7 @@ class Strand {
     field $step = 0;
     field @trace;
 
-    method compile ($env, $expr) {
+    method kompile ($env, $expr) {
         return Eval::Expr->new(
             env  => $env,
             expr => $expr,
@@ -344,13 +409,20 @@ class Strand {
     }
 
     method run ($env, $expr) {
-        my $kont = $self->compile($env, $expr);
-        while (true) {
-            push @trace => $kont;
+        $self->execute( $self->kompile($env, $expr) );
+    }
+
+    method execute ($kont) {
+        while (defined $kont) {
             $kont = $self->step($kont);
-            last if not defined $kont;
+            push @trace => $kont if defined $kont;
         }
         return @trace;
+    }
+
+    method resume {
+        # TODO - make sure it is a yield
+        return $self->execute( $trace[-1]->kont );
     }
 
     method step ($kont) {
@@ -364,70 +436,6 @@ class Strand {
             }
         }
     }
-}
-
-## -----------------------------------------------------------------------------
-
-class Parser {
-    field @stack;
-
-    ADJUST {
-        push @stack => +[];
-    }
-
-    method tokenizer ($source) {
-        if ($source =~ /\;/) {
-            $source =~ s/\;.*\n//g;
-        }
-        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
-    }
-
-    method parse ($source) {
-        my @tokens = $self->tokenizer($source);
-        while (@tokens) {
-            my $token = shift @tokens;
-            if ($token =~ /^\'[^\(]/) {
-                $token =~ s/^\'//;
-                push @stack => +[ Sym->new(ident => 'quote' ) ];
-                unshift @tokens => ')';
-            }
-
-            given ($token) {
-                when ('\'(') {
-                    push @stack => +[ Sym->new(ident => 'quote' ) ];
-                }
-                when ('(') {
-                    push @stack => +[];
-                }
-                when (')') {
-                    my $list = pop @stack;
-                    push $stack[-1]->@*, (scalar $list->@* > 0)
-                        ? Cons->of( $list->@* )
-                        : Nil->new;
-                }
-                when (/^\"/) {
-                    push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) );
-                }
-                when (/^\d+$/) {
-                    push $stack[-1]->@*, Num->new( raw => $token+0 );
-                }
-                when ('nil') {
-                    push $stack[-1]->@*, Nil->new;
-                }
-                when ('true') {
-                    push $stack[-1]->@*, Bool->TRUE;
-                }
-                when ('false') {
-                    push $stack[-1]->@*, Bool->FALSE;
-                }
-                default {
-                    push $stack[-1]->@*, Sym->new( ident => $token );
-                }
-            }
-        }
-        return $stack[-1]->@*;
-    }
-
 }
 
 ## -----------------------------------------------------------------------------
@@ -464,6 +472,12 @@ my $env = Env->new(
             },
             is_operative => true,
         ),
+
+        'yield' => Native->new(
+            name => 'yield',
+            proc => sub ($ctx, $expr) { $ctx->yield( $expr ) },
+            is_operative => true,
+        ),
     }
 );
 
@@ -471,10 +485,12 @@ my $parser = Parser->new;
 my $strand = Strand->new;
 
 my ($expr) = $parser->parse(q[
-    ((lambda (x y) (+ x y)) 10 20)
+    (+ (yield 10) (yield 20))
 ]);
 
 say join "\n" => $strand->run( $env, $expr );
+say join "\n" => $strand->resume;
+say join "\n" => $strand->resume;
 
 
 
