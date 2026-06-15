@@ -119,6 +119,9 @@ class Lambda :isa(Callable) {
     field $params :param :reader;
     field $body   :param :reader;
     field $env    :param :reader;
+    field $name   :param :reader = undef;
+
+    method has_name { defined $name }
 
     method is_operative   { false }
     method is_applicative { true  }
@@ -146,6 +149,10 @@ class Env {
         return $bindings->{ $sym->ident }
             // (defined $parent ? $parent->lookup($sym) : undef);
     }
+
+    method derive (%bindings) {
+        return Env->new( parent => $self, bindings => \%bindings )
+    }
 }
 
 ## -----------------------------------------------------------------------------
@@ -153,40 +160,9 @@ class Env {
 class Kontinue {
     use overload '""' => 'to_string';
 
-    field $env  :param :reader;
     field $kont :param :reader = undef;
 
-    method throw_error ($error) {
-        Error->new( env => $self->env, error => $error, kont => $self->kont )
-    }
-
-    method return_value ($value, $kont=undef) {
-        Return->new( env => $self->env, value => $value, kont => $kont // $self->kont )
-    }
-
-    method conditional ($condition, $if_true, $if_false) {
-        Eval::Expr->new(
-            env  => $self->env,
-            expr => $condition,
-            kont => Cond->new(
-                env      => $self->env,
-                if_true  => $if_true,
-                if_false => $if_false,
-                kont     => $self->kont,
-            )
-        )
-    }
-
-    method yield ($expr) {
-        Yield->new(
-            env  => $self->env,
-            kont => Eval::Expr->new(
-                env  => $self->env,
-                expr => $expr,
-                kont => $self->kont
-            )
-        )
-    }
+    method kontinue ($ctx) { ... }
 
     method to_string {
         return sprintf '%s!!', __CLASS__ if not defined $kont;
@@ -208,7 +184,7 @@ class Kontinue {
 class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
-    method kontinue {
+    method kontinue ($ctx) {
         $self->DEBUG(expr => $expr);
 
         given (blessed $expr) {
@@ -218,23 +194,21 @@ class Eval::Expr :isa(Kontinue) {
                 #   when Callable -> create Apply-Expr and call ->kontinue(Calleble)
                 # ...
                 return Eval::Expr->new(
-                    env  => $self->env,
                     expr => $expr->head,
                     kont => Apply::Expr->new(
-                        env  => $self->env,
                         args => $expr->tail,
                         kont => $self->kont,
                     )
                 )
             }
             when ('Sym') {
-                my $value = $self->env->lookup($expr);
-                return $self->throw_error("Unable to find ${expr} in Env")
+                my $value = $ctx->lookup($expr);
+                return $ctx->throw_error("Unable to find ${expr} in Env", $self)
                     if not defined $value;
-                return $self->return_value($value);
+                return $ctx->return_value($value, $self->kont);
             }
             default {
-                return $self->return_value($expr);
+                return $ctx->return_value($expr, $self->kont);
             }
         }
     }
@@ -243,22 +217,19 @@ class Eval::Expr :isa(Kontinue) {
 class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
-    method kontinue ($call) {
+    method kontinue ($ctx, $call) {
         $self->DEBUG(args => $args, '+call' => $call);
         if ($call->is_operative) {
-            return $self->return_value( $args,
+            return $ctx->return_value( $args,
                 Apply::Call->new(
-                    env  => $self->env,
                     call => $call,
                     kont => $self->kont,
                 )
             );
         } else {
             return Eval::Rest->new(
-                env  => $self->env,
                 rest => $args,
                 kont => Apply::Call->new(
-                    env  => $self->env,
                     call => $call,
                     kont => $self->kont,
                 )
@@ -271,7 +242,7 @@ class Eval::Rest :isa(Kontinue) {
     field $rest :param :reader;
     field $done :param :reader = Nil->new;
 
-    method kontinue ($evaled=undef) {
+    method kontinue ($ctx, $evaled=undef) {
         $self->DEBUG(rest => $rest, done => $done, '+evaled' => $evaled // '?');
 
         $done = Cons->new( head => $evaled, tail => $done )
@@ -286,14 +257,12 @@ class Eval::Rest :isa(Kontinue) {
             $rest = $rest->tail;
         }
 
-        return $self->return_value( $done->reverse )
+        return $ctx->return_value( $done->reverse, $self->kont )
             if $rest->is_nil;
 
         return Eval::Expr->new(
-            env  => $self->env,
             expr => $rest->head,
             kont => Eval::Rest->new(
-                env  => $self->env,
                 rest => $rest->tail,
                 done => $done,
                 kont => $self->kont,
@@ -305,38 +274,44 @@ class Eval::Rest :isa(Kontinue) {
 class Apply::Call :isa(Kontinue) {
     field $call :param :reader;
 
-    method kontinue ($args) {
+    method kontinue ($ctx, $args) {
         $self->DEBUG(call => $call, '+args' => $args);
 
         given (blessed $call) {
             when ('Native') {
                 my @args = $args->uncons;
                 if ($call->is_operative) {
-                    return $call->proc->( $self, @args );
+                    return $call->proc->( $ctx, @args );
                 } else {
-                    return $self->return_value( $call->proc->( @args ) );
+                    return $ctx->return_value( $call->proc->( @args ), $self->kont );
                 }
             }
             when ('Lambda') {
                 my %local;
+
+                $local{ $call->name->ident } = $call
+                    if $call->has_name;
+
                 my $params = $call->params;
                 until ($params->is_nil) {
-                    return $self->throw_error("Arity Mismatch - missing:${params}")
+                    return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
                         if $args->is_nil;
                     $local{ $params->head->ident } = $args->head;
                     $params = $params->tail;
                     $args   = $args->tail;
                 }
-                return $self->throw_error("Arity Mismatch - additional:${args}")
+                return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
                     unless $args->is_nil;
 
-                my $local = Env->new( parent => $self->env, bindings => \%local );
-
-                return Eval::Expr->new(
-                    env  => $local,
-                    expr => $call->body,
-                    kont => $self->kont,
-                );
+                return Scope::Enter->new(
+                    env  => $call->env->derive( \%local ),
+                    kont => Eval::Expr->new(
+                        expr => $call->body,
+                        kont => Scope::Leave->new(
+                            kont => $self->kont
+                        )
+                    )
+                )
             }
             default {
                 die "Cannot call => ${call}";
@@ -346,16 +321,28 @@ class Apply::Call :isa(Kontinue) {
 }
 
 class Scope::Enter :isa(Kontinue) {
-    method kontinue {
+    field $env :param :reader;
+    method kontinue ($ctx) {
         $self->DEBUG;
+        $ctx->enter_scope( $env );
         return $self->kont;
     }
 }
 
 class Scope::Leave :isa(Kontinue) {
-    method kontinue ($result) {
+    method kontinue ($ctx, $result) {
         $self->DEBUG('+result' => $result);
-        return $self->return_value( $result );
+        $ctx->leave_scope;
+        return $ctx->return_value( $result, $self->kont );
+    }
+}
+
+class Bind :isa(Kontinue) {
+    field $name :param :reader;
+    method kontinue ($ctx, $value) {
+        $self->DEBUG('name' => $name, '+value' => $value);
+        $ctx->define( $name, $value );
+        return $ctx->return_value( $value, $self->kont );
     }
 }
 
@@ -363,9 +350,8 @@ class Cond :isa(Kontinue) {
     field $if_true  :param :reader;
     field $if_false :param :reader;
 
-    method kontinue ($condition) {
+    method kontinue ($ctx, $condition) {
         return Eval::Expr->new(
-            env  => $self->env,
             expr => ($condition->raw ? $if_true : $if_false),
             kont => $self->kont,
         )
@@ -375,14 +361,14 @@ class Cond :isa(Kontinue) {
 class Return :isa(Kontinue) {
     field $value :param :reader;
 
-    method kontinue {
+    method kontinue ($ctx) {
         $self->DEBUG('value' => $value);
         return $value;
     }
 }
 
 class Yield :isa(Kontinue) {
-    method kontinue {
+    method kontinue ($ctx) {
         $self->DEBUG;
         return undef;
     }
@@ -391,7 +377,7 @@ class Yield :isa(Kontinue) {
 class Error :isa(Kontinue) {
     field $error :param :reader;
 
-    method kontinue {
+    method kontinue ($ctx) {
         $self->DEBUG('error' => $error);
         return undef;
     }
@@ -400,7 +386,7 @@ class Error :isa(Kontinue) {
 class Halt :isa(Kontinue) {
     field $result;
 
-    method kontinue ($r) {
+    method kontinue ($ctx, $r) {
         $self->DEBUG('+result' => $r);
         $result = $r;
         return undef;
@@ -412,20 +398,79 @@ class Halt :isa(Kontinue) {
 class Strand {
     field $step = 0;
     field @trace;
+    field @environments;
+
+    ## -------------------------------------------------------------------------
+
+    method enter_scope ($e) { push @environments => [ $e ] }
+    method leave_scope      { pop @environments }
+    method current_scope    { $environments[-1] }
+    method current_env      { $self->current_scope->[-1] }
+
+    method lookup ($sym) {
+        $self->current_env->lookup( $sym )
+    }
+
+    method define ($name, $value) {
+        push $self->current_scope->@* =>
+            $self->current_env->derive( $name->ident, $value );
+    }
+
+    ## -------------------------------------------------------------------------
+
+    method bind ($name, $expr, $kont=undef) {
+        Eval::Expr->new(
+            expr => $expr,
+            kont => Bind->new(
+                name => $name,
+                kont => $kont // $trace[-1]->kont
+            )
+        )
+    }
+
+    method throw_error ($error, $kont=undef) {
+        Error->new( error => $error, kont => $kont // $trace[-1]->kont )
+    }
+
+    method return_value ($value, $kont=undef) {
+        Return->new( value => $value, kont => $kont // $trace[-1]->kont )
+    }
+
+    method conditional ($condition, $if_true, $if_false, $kont=undef) {
+        Eval::Expr->new(
+            expr => $condition,
+            kont => Cond->new(
+                if_true  => $if_true,
+                if_false => $if_false,
+                kont     => $kont // $trace[-1]->kont,
+            )
+        )
+    }
+
+    method yield ($expr, $kont=undef) {
+        Yield->new(
+            kont => Eval::Expr->new(
+                expr => $expr,
+                kont => $kont // $trace[-1]->kont
+            )
+        )
+    }
+
+    ## -------------------------------------------------------------------------
 
     method kompile ($env, $expr) {
         return Scope::Enter->new(
             env => $env,
             kont => Eval::Expr->new(
-                env  => $env,
                 expr => $expr,
                 kont => Scope::Leave->new(
-                    env  => $env,
-                    kont => Halt->new( env => $env )
+                    kont => Halt->new
                 )
             )
         )
     }
+
+    ## -------------------------------------------------------------------------
 
     method run ($env, $expr) {
         $self->execute( $self->kompile($env, $expr) );
@@ -441,8 +486,9 @@ class Strand {
 
     method resume {
         return $self->execute( $trace[-1]->kont ) if $trace[-1] isa Yield;
-        return $self->execute( $trace[-1]->throw_error(
-            "You can only resume from a Yield, not ".$trace[-1]
+        return $self->execute( $self->throw_error(
+            "You can only resume from a Yield, not ".$trace[-1],
+            $trace[-1]
         ));
     }
 
@@ -451,10 +497,10 @@ class Strand {
         given (blessed $kont) {
             when ('Return') {
                 push @trace => $kont->kont;
-                return $kont->kont->kontinue( $kont->value );
+                return $kont->kont->kontinue( $self, $kont->value );
             }
             default {
-                return $kont->kontinue;
+                return $kont->kontinue( $self );
             }
         }
     }
@@ -481,7 +527,7 @@ my $env = Env->new(
             name => 'lambda',
             proc => sub ($ctx, $p, $b) {
                 $ctx->return_value(
-                    Lambda->new( params => $p, body => $b, env => $ctx->env )
+                    Lambda->new( params => $p, body => $b, env => $ctx->current_env )
                 )
             },
             is_operative => true,
@@ -500,6 +546,27 @@ my $env = Env->new(
             proc => sub ($ctx, $expr) { $ctx->yield( $expr ) },
             is_operative => true,
         ),
+
+        'let' => Native->new(
+            name => 'let',
+            proc => sub ($ctx, $name, $value) { $ctx->bind( $name, $value ) },
+            is_operative => true,
+        ),
+
+        'defun' => Native->new(
+            name => 'defun',
+            proc => sub ($ctx, $name, $params, $body) {
+                my $f = Lambda->new(
+                    name   => $name,
+                    params => $params,
+                    body   => $body,
+                    env    => $ctx->current_env,
+                );
+                $ctx->define( $name, $f );
+                return $ctx->return_value( $f );
+            },
+            is_operative => true,
+        ),
     }
 );
 
@@ -507,12 +574,12 @@ my $parser = Parser->new;
 my $strand = Strand->new;
 
 my ($expr) = $parser->parse(q[
-    (+ 10 (yield (yield 20)))
+    (defun fact (n)
+        (if (== n 0) n
+            (* n (fact (- n 1)))))
 ]);
 
 say join "\n" => $strand->run( $env, $expr );
-say join "\n" => $strand->resume;
-say join "\n" => $strand->resume;
 
 
 
