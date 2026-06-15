@@ -458,16 +458,19 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
-    method kompile ($env, $expr) {
-        return Scope::Enter->new(
-            env => $env,
-            kont => Eval::Expr->new(
-                expr => $expr,
-                kont => Scope::Leave->new(
-                    kont => Halt->new
+    method kompile ($env, @exprs) {
+        my $expr;
+        while (@exprs) {
+            return Scope::Enter->new(
+                env => $env,
+                kont => Eval::Expr->new(
+                    expr => $expr,
+                    kont => Scope::Leave->new(
+                        kont =>
+                    )
                 )
             )
-        )
+        }
     }
 
     ## -------------------------------------------------------------------------
@@ -573,13 +576,17 @@ my $env = Env->new(
 my $parser = Parser->new;
 my $strand = Strand->new;
 
-my ($expr) = $parser->parse(q[
+my @exprs = $parser->parse(q[
     (defun fact (n)
         (if (== n 0) n
             (* n (fact (- n 1)))))
+
+    (fact 6)
 ]);
 
-say join "\n" => $strand->run( $env, $expr );
+say $_ foreach @exprs;
+
+#say join "\n" => $strand->run( $env, $expr );
 
 
 
