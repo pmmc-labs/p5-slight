@@ -411,7 +411,7 @@ class Bind :isa(Kontinue) {
     method kontinue ($ctx, $value) {
         $self->DEBUG('name' => $name, '+value' => $value);
         $ctx->define( $name, $value );
-        return $ctx->return_value( $value, $self->kont );
+        return $self->kont;
     }
 
     method to_string {
@@ -561,13 +561,13 @@ class Strand {
 
     method kompile ($env, $exprs) {
         my $kont  = Scope::Leave->new( kont => Halt->new );
-        my @exprs = @$exprs;
+        my @exprs = map { $self->link( $env, $_ ) } @$exprs;
 
         if ($ENV{TEST} >= 5) {
             while (@exprs) {
                 if ($exprs[0] isa Cons
-                &&  $exprs[0]->head isa Sym
-                &&  $exprs[0]->head->ident eq 'defun') {
+                &&  $exprs[0]->head isa Callable
+                &&  $exprs[0]->head->name eq 'defun') {
                     my ($name, $params, $body) = (shift @exprs)->tail->uncons;
                     $env = $env->derive(
                         $name->ident, Lambda->new(
@@ -585,7 +585,7 @@ class Strand {
 
         foreach my $expr (reverse @exprs) {
             $kont = Eval::Expr->new(
-                expr => $self->link( $env, $expr ),
+                expr => $expr,
                 kont => ($kont isa Scope::Leave)
                         ? $kont
                         : Drop->new( kont => $kont ));
