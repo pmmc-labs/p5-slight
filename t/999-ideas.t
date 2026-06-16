@@ -193,13 +193,36 @@ class Eval::Expr :isa(Kontinue) {
 
         given (blessed $expr) {
             when ('Cons') {
-                return Eval::Expr->new(
-                    expr => $expr->head,
-                    kont => Apply::Expr->new(
-                        args => $expr->tail,
-                        kont => $self->kont,
-                    )
-                )
+                my $apply = Apply::Expr->new(
+                    args => $expr->tail,
+                    kont => $self->kont,
+                );
+
+                my $next;
+                if ($ENV{TEST} >= 1) {
+                    if ($expr->head isa Callable) {
+                        $next = $apply->kontinue( $ctx, $expr->head );
+                    }
+                }
+
+                if ($ENV{TEST} >= 2) {
+                    if ($expr->head isa Sym) {
+                        my $call = $ctx->lookup( $expr->head );
+                        return $ctx->throw_error("Unable to find ".$expr->head." in Env", $self)
+                            if not defined $call;
+                        $next = $apply->kontinue( $ctx, $call );
+                    }
+                }
+
+                if ($ENV{TEST} >= 4) {
+                    if ($next isa Eval::Args) {
+                        $next = $next->kontinue( $ctx );
+                    }
+                }
+
+                return $next if defined $next;
+
+                return Eval::Expr->new( expr => $expr->head, kont => $apply );
             }
             when ('Sym') {
                 my $value = $ctx->lookup($expr);
@@ -256,6 +279,14 @@ class Eval::Args :isa(Kontinue) {
 
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
+
+        if ($ENV{TEST} >= 3)  {
+            until ($rest->is_nil) {
+                last unless $rest->head isa Literal;
+                $done = Cons->new( head => $rest->head, tail => $done );
+                $rest = $rest->tail;
+            }
+        }
 
         # if no more left, return it
         return $ctx->return_value( $done->reverse, $self->kont )
@@ -617,15 +648,17 @@ my $strand = Strand->new;
 
 my $exprs = $parser->parse(q[
 
-; (defun fact (n)
-;     (if (== n 0) 1
-;         (* n (fact (- n 1)))))
-; (defun fib (n)
-;     (if (< n 2) n
-;         (+ (fib (- n 2)) (fib (- n 1)))))
-; (fact (fib 6))
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
 
-(+ 10 20)
+(defun fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 2)) (fib (- n 1)))))
+
+(fact (fib 6))
+
+;(+ 10 20)
 
 ]);
 
