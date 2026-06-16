@@ -255,6 +255,23 @@ class Apply::Expr :isa(Kontinue) {
                 )
             );
         } else {
+            if ($ENV{TEST} >= 6) {
+                my $next = Apply::Call->new( call => $call, kont => $self->kont );
+                if ($args->is_nil) {
+                    return $next;
+                }
+                elsif ($args->tail->is_nil) {
+                    if ($args->head isa Literal) {
+                        return $ctx->return_value( Cons->of( $args->head ), $next )
+                    }
+                    else {
+                        return Eval::Expr->new( expr => $args->head, kont => $next )
+                    }
+                }
+                else {
+                    return Eval::Args->new( rest => $args, kont => $next )
+                }
+            }
             return Eval::Args->new(
                 rest => $args,
                 kont => Apply::Call->new(
@@ -332,6 +349,10 @@ class Apply::Call :isa(Kontinue) {
 
     method kontinue ($ctx, $args) {
         $self->DEBUG(call => $call, '+args' => $args);
+
+        if ($ENV{TEST} >= 6) {
+            $args = Cons->of( $args ) unless $args isa List;
+        }
 
         given (blessed $call) {
             when ('Native') {
@@ -540,7 +561,29 @@ class Strand {
 
     method kompile ($env, $exprs) {
         my $kont  = Scope::Leave->new( kont => Halt->new );
-        foreach my $expr (reverse @$exprs) {
+        my @exprs = @$exprs;
+
+        if ($ENV{TEST} >= 5) {
+            while (@exprs) {
+                if ($exprs[0] isa Cons
+                &&  $exprs[0]->head isa Sym
+                &&  $exprs[0]->head->ident eq 'defun') {
+                    my ($name, $params, $body) = (shift @exprs)->tail->uncons;
+                    $env = $env->derive(
+                        $name->ident, Lambda->new(
+                            name   => $name,
+                            params => $params,
+                            body   => $body,
+                            env    => $env,
+                        )
+                    );
+                } else {
+                    last;
+                }
+            }
+        }
+
+        foreach my $expr (reverse @exprs) {
             $kont = Eval::Expr->new(
                 expr => $self->link( $env, $expr ),
                 kont => ($kont isa Scope::Leave)
