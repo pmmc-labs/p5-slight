@@ -126,12 +126,14 @@ class Lambda :isa(Callable) {
     method is_operative   { false }
     method is_applicative { true  }
 
-    method to_string { sprintf '(lambda %s %s)' => $params->to_string, $body->to_string }
+    method to_string { sprintf '(<lambda> %s %s)' => $params->to_string, $body->to_string }
 }
 
 class Native :isa(Callable) {
     field $name :param :reader;
     field $proc :param :reader;
+
+    method has_name { defined $name }
 
     field $is_operative :param :reader = false;
     method is_applicative { !$is_operative }
@@ -186,29 +188,8 @@ class Kontinue {
 class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
-    method jit ($ctx) {
-        given (blessed $expr) {
-            when ('Cons') {
-                given (blessed $expr->head) {
-                    when ('Sym') {
-                        if (my $found = $ctx->lookup( $expr->head )) {
-                            return $ctx->return_value(
-                                $found,
-                                Apply::Expr->new(
-                                    args => $expr->tail,
-                                    kont => $self->kont,
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     method kontinue ($ctx) {
         $self->DEBUG(expr => $expr);
-        if (my $jit = $self->jit($ctx)) { return $jit }
 
         given (blessed $expr) {
             when ('Cons') {
@@ -231,24 +212,17 @@ class Eval::Expr :isa(Kontinue) {
             }
         }
     }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $expr->to_string, $self->kont->to_string;
+    }
 }
 
 class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
-    method jit ($ctx, $call) {
-        return unless $call->is_applicative;
-        if ($args->is_nil) {
-            return Apply::Call->new(
-                call => $call,
-                kont => $self->kont,
-            )
-        }
-    }
-
     method kontinue ($ctx, $call) {
         $self->DEBUG(args => $args, '+call' => $call);
-        if (my $jit = $self->jit($ctx, $call)) { return $jit }
 
         if ($call->is_operative) {
             return $ctx->return_value( $args,
@@ -267,32 +241,18 @@ class Apply::Expr :isa(Kontinue) {
             )
         }
     }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $args->to_string, $self->kont->to_string;
+    }
 }
 
 class Eval::Args :isa(Kontinue) {
     field $rest :param :reader;
     field $done :param :reader = Nil->new;
 
-    method jit ($ctx, $value=undef) {
-        return if defined $value;
-
-        # Literals do not need to be evaled
-        # so we can look for any pending ones
-        # and put the in done already
-        until ($rest->is_nil) {
-            last unless $rest->head isa Literal;
-            $done = Cons->new( head => $rest->head, tail => $done );
-            $rest = $rest->tail;
-        }
-
-        # if no more left, return it
-        return $ctx->return_value( $done->reverse, $self->kont )
-            if $rest->is_nil;
-    }
-
     method kontinue ($ctx, $value=undef) {
         $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?');
-        if (my $jit = $self->jit($ctx, $value)) { return $jit }
 
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
@@ -310,10 +270,34 @@ class Eval::Args :isa(Kontinue) {
             )
         );
     }
+
+    method to_string {
+        return sprintf '%s[%s][%s] > %s', __CLASS__, $rest->to_string, $done->to_string, $self->kont->to_string;
+    }
 }
 
 class Apply::Call :isa(Kontinue) {
     field $call :param :reader;
+
+    method bind_params ($ctx, $call, $args) {
+        my %local;
+
+        $local{ $call->name->ident } = $call
+            if $call->has_name;
+
+        my $params = $call->params;
+        until ($params->is_nil) {
+            return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
+                if $args->is_nil;
+            $local{ $params->head->ident } = $args->head;
+            $params = $params->tail;
+            $args   = $args->tail;
+        }
+        return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
+            unless $args->is_nil;
+
+        return $call->env->derive( %local );
+    }
 
     method kontinue ($ctx, $args) {
         $self->DEBUG(call => $call, '+args' => $args);
@@ -328,24 +312,8 @@ class Apply::Call :isa(Kontinue) {
                 }
             }
             when ('Lambda') {
-                my %local;
-
-                $local{ $call->name->ident } = $call
-                    if $call->has_name;
-
-                my $params = $call->params;
-                until ($params->is_nil) {
-                    return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
-                        if $args->is_nil;
-                    $local{ $params->head->ident } = $args->head;
-                    $params = $params->tail;
-                    $args   = $args->tail;
-                }
-                return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
-                    unless $args->is_nil;
-
                 return Scope::Enter->new(
-                    env  => $call->env->derive( %local ),
+                    env  => $self->bind_params( $ctx, $call, $args ),
                     kont => Eval::Expr->new(
                         expr => $call->body,
                         kont => Scope::Leave->new(
@@ -359,6 +327,10 @@ class Apply::Call :isa(Kontinue) {
             }
         }
     }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $call->name, $self->kont->to_string;
+    }
 }
 
 class Scope::Enter :isa(Kontinue) {
@@ -367,6 +339,10 @@ class Scope::Enter :isa(Kontinue) {
         $self->DEBUG;
         $ctx->enter_scope( $env );
         return $self->kont;
+    }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $env, $self->kont->to_string;
     }
 }
 
@@ -385,6 +361,10 @@ class Bind :isa(Kontinue) {
         $ctx->define( $name, $value );
         return $ctx->return_value( $value, $self->kont );
     }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $name->to_string, $self->kont->to_string;
+    }
 }
 
 class Cond :isa(Kontinue) {
@@ -394,8 +374,8 @@ class Cond :isa(Kontinue) {
     method kontinue ($ctx, $condition) {
         return Eval::Expr->new(
             expr => ($condition->raw ? $if_true : $if_false),
-            kont => $self->kont,
-        )
+            kont => $self->kont
+        );
     }
 }
 
@@ -405,6 +385,10 @@ class Return :isa(Kontinue) {
     method kontinue ($ctx) {
         $self->DEBUG('value' => $value);
         return $self->kont;
+    }
+
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__, $value->to_string, $self->kont->to_string;
     }
 }
 
@@ -509,27 +493,33 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
+    method link ($env, $expr) {
+        given (blessed $expr) {
+            when ('Cons') {
+                return Cons->of( map { $self->link( $env, $_ ) } $expr->uncons );
+            }
+            when ('Sym') {
+                return $env->lookup($expr) // $expr;
+            }
+            default {
+                return $expr;
+            }
+        }
+    }
+
     method kompile ($env, $exprs) {
-        my @exprs = reftype $exprs eq 'ARRAY' ? @$exprs : $exprs;
         my $kont  = Scope::Leave->new( kont => Halt->new );
         foreach my $expr (reverse @$exprs) {
             $kont = Eval::Expr->new(
-                expr => $expr,
+                expr => $self->link( $env, $expr ),
                 kont => ($kont isa Scope::Leave)
-                    ? $kont
-                    : Drop->new( kont => $kont )
-            );
+                        ? $kont
+                        : Drop->new( kont => $kont ));
         }
         return Scope::Enter->new( env => $env, kont => $kont );
     }
 
-    ## -------------------------------------------------------------------------
-
-    method run ($env, $exprs) {
-        $self->execute( $self->kompile( $env, $exprs ) );
-    }
-
-    method execute ($kont) {
+    method run ($kont) {
         while (defined $kont) {
             push @trace => $kont;
             $kont = $self->step($kont);
@@ -627,22 +617,30 @@ my $strand = Strand->new;
 
 my $exprs = $parser->parse(q[
 
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
+; (defun fact (n)
+;     (if (== n 0) 1
+;         (* n (fact (- n 1)))))
+; (defun fib (n)
+;     (if (< n 2) n
+;         (+ (fib (- n 2)) (fib (- n 1)))))
+; (fact (fib 6))
 
-(defun fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 2)) (fib (- n 1)))))
-
-
-(fact 6) ;; 40320
+(+ 10 20)
 
 ]);
 
+say "PARSED:";
 say $_ foreach @$exprs;
-#say join "\n" =>
-say scalar $strand->run( $env, $exprs );
+
+my $compiled = $strand->kompile( $env, $exprs );
+
+say "COMPILED:";
+say $compiled;
+
+say "TRACE:";
+my @trace = $strand->run( $compiled );
+say join "\n" => @trace;
+say "STEPS: ", scalar @trace;
 
 
 
