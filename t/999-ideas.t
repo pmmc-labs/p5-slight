@@ -4,11 +4,17 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
+## -----------------------------------------------------------------------------
+
 use constant DEBUG => $ENV{DEBUG} // 0;
 use constant TRACE => $ENV{TRACE} // 0;
 
+## -----------------------------------------------------------------------------
+
 use constant OPTIMIZE_CALLS  => true;
 use constant PRECOMPILE_DEFS => true;
+
+## -----------------------------------------------------------------------------
 
 our %ALLOCATIONS = (
     TERMS => +{},
@@ -23,33 +29,6 @@ our %STATS = (
         RUNTIME     => +{}
     }
 );
-
-=pod
-
-# NOTES:
-
-- add Cable (collection of Strands)
-
-- create an EDB
-    - (assert! Bob :knows Alice)
-    - (query?  @_  :knows Alice)
-        - everyone that knows Alice
-    - (query?  @_  :knows @_ )
-        - every :knows relation
-    - (query?  (ne? Bob) :knows Alice)
-        - filtering, with a partial sub
-    - (query?  @_  :knows (Alice Carol))
-        - everyone that knows Alice and Carol
-    - (query?  %_  :knows (Alice Carol))
-        - two groups, one for Alice, the other for Carol
-    - (query? (and ($_ :parent Alice)
-                   ($_ :knows Bob)))
-        - do any of Alice's parents know Bob?
-    - (query? (and ($_ :parent @_)
-                   ($_ :knows Bob)))
-        - all the parents that know bob
-
-=cut
 
 ## -----------------------------------------------------------------------------
 
@@ -643,7 +622,8 @@ class Strand::Ref {
 ## -----------------------------------------------------------------------------
 
 class Strand {
-    field $host :param :reader;
+    field $host  :param :reader;
+    field $enter :param :reader;
 
     field $ref   :reader;
     field $steps :reader;
@@ -682,7 +662,9 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
-    method run ($kont) {
+    method run { $self->execute( $enter ) }
+
+    method execute ($kont) {
         while (defined $kont) {
             push @trace => $kont;
             $kont = $self->step($kont);
@@ -713,6 +695,16 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
+class Cable {
+    field $host :param :reader;
+
+    method run (@strands) {
+
+    }
+}
+
+## -----------------------------------------------------------------------------
+
 class Runtime {
     field $root_env :reader;
     field $compiler :reader;
@@ -728,7 +720,9 @@ class Runtime {
 
     method compile ($env, $exprs) { $compiler->compile( $env, $exprs ) }
 
-    method create_strand { Strand->new( host => $self ) }
+    method initialize_strand ($kont) {
+        Strand->new( host => $self, enter => $kont )
+    }
 
     method initialize_root_env {
         return Env->new(
@@ -794,11 +788,7 @@ class Runtime {
     }
 }
 
-my $host = Runtime->new;
-
-
-#my $PRELUDE = join '' => grep !/^\s*$/, <DATA>;
-
+my $host  = Runtime->new;
 my $exprs = $host->parse(q[
 
 (defun fact (n)
@@ -825,13 +815,12 @@ foreach my ($name, $f) ($compiled->env->DUMP) {
 say '    + (main)';
 say '       ', $compiled;
 
-my @trace = $host->create_strand->run( $compiled );
+my @trace = $host->initialize_strand( $compiled )->run;
 
 say "STATS:";
 say "    STEPS : ", scalar @trace;
 say "  DEFINES : ", $STATS{DEFINES} // 0;
 say "  LOOKUPS : ", $STATS{LOOKUPS} // 0;
-
 
 if (TRACE) {
     say "TRACE:";

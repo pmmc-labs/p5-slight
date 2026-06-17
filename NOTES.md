@@ -2,6 +2,31 @@
 # NOTES
 <!----------------------------------------------------------------------------->
 
+- create an EDB
+    - (assert! Bob :knows Alice)
+    - (query?  @_  :knows Alice)
+        - everyone that knows Alice
+    - (query?  @_  :knows @_ )
+        - every :knows relation
+    - (query?  (ne? Bob) :knows Alice)
+        - filtering, with a partial sub
+    - (query?  @_  :knows (Alice Carol))
+        - everyone that knows Alice and Carol
+    - (query?  %_  :knows (Alice Carol))
+        - two groups, one for Alice, the other for Carol
+    - (query? (and ($_ :parent Alice)
+                   ($_ :knows Bob)))
+        - do any of Alice's parents know Bob?
+    - (query? (and ($_ :parent @_)
+                   ($_ :knows Bob)))
+        - all the parents that know bob
+
+
+<!----------------------------------------------------------------------------->
+<!----------------------------------------------------------------------------->
+<!----------------------------------------------------------------------------->
+
+
 ## make a prelude ...
 
 ```
