@@ -86,6 +86,10 @@ class Term {
     use overload '""' => 'to_string';
     method to_string { ... }
     method is_nil { false }
+
+    ADJUST {
+        say "CREATING ",__CLASS__;
+    }
 }
 
 class Sym :isa(Term) {
@@ -750,9 +754,9 @@ my $env = Env->new(
 my $parser = Parser->new;
 my $strand = Strand->new;
 
-my $PRELUDE = join '' => grep !/^\s*$/, <DATA>;
+#my $PRELUDE = join '' => grep !/^\s*$/, <DATA>;
 
-my $exprs = $parser->parse($PRELUDE.q[
+my $exprs = $parser->parse(q[
 
 (defun fact (n)
     (if (== n 0) 1
@@ -763,8 +767,6 @@ my $exprs = $parser->parse($PRELUDE.q[
         (+ (fib (- n 2)) (fib (- n 1)))))
 
 (fact (fib 6))
-
-;(+ 10 20)
 
 ]);
 
@@ -791,10 +793,7 @@ if (TRACE) {
     say '    - ', $trace[-1];
 }
 
-
 __DATA__
-
-
 (let x 6)
 
 
