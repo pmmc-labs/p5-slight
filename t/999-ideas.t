@@ -11,6 +11,12 @@ use constant LINKING_ENABLED => true;
 use constant OPTIMIZE_CALLS  => true;
 use constant PRECOMPILE_DEFS => true;
 
+our %ALLOCATIONS = (
+    TERMS => +{},
+    KONTS => +{},
+    MISC  => +{},
+);
+
 =pod
 
 # NOTES:
@@ -87,9 +93,7 @@ class Term {
     method to_string { ... }
     method is_nil { false }
 
-    ADJUST {
-        say "CREATING ",__CLASS__;
-    }
+    ADJUST { $::ALLOCATIONS{TERMS}->{ blessed $self }++ }
 }
 
 class Sym :isa(Term) {
@@ -199,6 +203,8 @@ class Env {
         return () unless defined $parent; # do not DUMP the root
         return $parent->DUMP, %$bindings;
     }
+
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
 }
 
 ## -----------------------------------------------------------------------------
@@ -225,6 +231,8 @@ class Kontinue {
                 (blessed $arg ? $arg->to_string : $arg);
         }
     }
+
+    ADJUST { $::ALLOCATIONS{KONTS}->{ blessed $self }++ }
 }
 
 ## -----------------------------------------------------------------------------
@@ -504,7 +512,7 @@ class Halt :isa(Kontinue) {
 
 ## -----------------------------------------------------------------------------
 
-class Strand::Ref :isa(Term) {
+class Strand::Ref {
     field $strand :param :reader;
 
     method current_env     { $strand->current_env }
@@ -560,6 +568,8 @@ class Strand::Ref :isa(Term) {
             )
         )
     }
+
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
 }
 
 ## -----------------------------------------------------------------------------
@@ -573,6 +583,8 @@ class Strand {
     ADJUST {
         $ref   = Strand::Ref->new( strand => $self );
         $steps = 0;
+
+        $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
 
     ## -------------------------------------------------------------------------
@@ -792,6 +804,21 @@ if (TRACE) {
     say "GOT:";
     say '    - ', $trace[-1];
 }
+
+say "ALLOCATIONS:";
+say " +TERMS:";
+foreach my $type (sort { $ALLOCATIONS{TERMS}->{$b} <=> $ALLOCATIONS{TERMS}->{$a} } keys $ALLOCATIONS{TERMS}->%*) {
+    say sprintf '%16s : %d' => $type, $ALLOCATIONS{TERMS}->{$type};
+}
+say " +KONTS:";
+foreach my $type (sort { $ALLOCATIONS{KONTS}->{$b} <=> $ALLOCATIONS{KONTS}->{$a} } keys $ALLOCATIONS{KONTS}->%*) {
+    say sprintf '%16s : %d' => $type, $ALLOCATIONS{KONTS}->{$type};
+}
+say " +MISC:";
+foreach my $type (sort { $ALLOCATIONS{MISC}->{$b} <=> $ALLOCATIONS{MISC}->{$a} } keys $ALLOCATIONS{MISC}->%*) {
+    say sprintf '%16s : %d' => $type, $ALLOCATIONS{MISC}->{$type};
+}
+
 
 __DATA__
 (let x 6)
