@@ -17,6 +17,14 @@ our %ALLOCATIONS = (
     MISC  => +{},
 );
 
+our %STATS = (
+    LOOKUPS     => 0,
+    DEFINITIONS => +{
+        COMPILETIME => +{},
+        RUNTIME     => +{}
+    }
+);
+
 =pod
 
 # NOTES:
@@ -595,10 +603,12 @@ class Strand {
     method current_env      { $self->current_scope->[-1] }
 
     method lookup ($sym) {
+        $STATS{LOOKUPS}++;
         $self->current_env->lookup( $sym )
     }
 
     method define ($name, $value) {
+        $STATS{DEFINITIONS}->{RUNTIME}++;
         push $self->current_scope->@* =>
             $self->current_env->derive( $name->ident, $value );
     }
@@ -642,6 +652,7 @@ class Strand {
                             env    => $env,
                         )
                     );
+                    $STATS{DEFINITIONS}->{COMPILETIME}++;
                     ();
                 } elsif ($_ isa Cons
                     &&  $_->head isa Callable
@@ -649,6 +660,7 @@ class Strand {
                     my ($name, $value) = $_->tail->uncons;
                     if ($value isa Literal) {
                         $env = $env->derive( $name->ident, $value );
+                        $STATS{DEFINITIONS}->{COMPILETIME}++;
                         ();
                     } else {
                         $_;
@@ -795,7 +807,12 @@ say '    + (main)';
 say '       ', $compiled;
 
 my @trace = $strand->run( $compiled );
-say "STEPS: ", scalar @trace;
+
+say "STATS:";
+say "    STEPS : ", scalar @trace;
+say "  DEFINES : ", $STATS{DEFINES} // 0;
+say "  LOOKUPS : ", $STATS{LOOKUPS} // 0;
+
 
 if (TRACE) {
     say "TRACE:";
