@@ -4,12 +4,39 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
-use constant DEBUG => !!$ENV{DEBUG};
-use constant TRACE => !!$ENV{TRACE};
+use constant DEBUG => $ENV{DEBUG} // 0;
+use constant TRACE => $ENV{TRACE} // 0;
 
-use constant LINKING_ENABLED  => !$ENV{STEP};
-use constant OPTIMIZE_CALLS   => !$ENV{STEP};
-use constant PRECOMPILE_DEFUN => !$ENV{STEP};
+use constant LINKING_ENABLED => true;
+use constant OPTIMIZE_CALLS  => true;
+use constant PRECOMPILE_DEFS => true;
+
+=pod
+
+# NOTES:
+
+- add Cable (collection of Strands)
+
+- create an EDB
+    - (assert! Bob :knows Alice)
+    - (query?  @_  :knows Alice)
+        - everyone that knows Alice
+    - (query?  @_  :knows @_ )
+        - every :knows relation
+    - (query?  (ne? Bob) :knows Alice)
+        - filtering, with a partial sub
+    - (query?  @_  :knows (Alice Carol))
+        - everyone that knows Alice and Carol
+    - (query?  %_  :knows (Alice Carol))
+        - two groups, one for Alice, the other for Carol
+    - (query? (and ($_ :parent Alice)
+                   ($_ :knows Bob)))
+        - do any of Alice's parents know Bob?
+    - (query? (and ($_ :parent @_)
+                   ($_ :knows Bob)))
+        - all the parents that know bob
+
+=cut
 
 ## -----------------------------------------------------------------------------
 
@@ -165,8 +192,8 @@ class Env {
     }
 
     method DUMP {
-        return () unless defined $parent;
-        return %$bindings, $parent->DUMP;
+        return () unless defined $parent; # do not DUMP the root
+        return $parent->DUMP, %$bindings;
     }
 }
 
@@ -358,14 +385,10 @@ class Apply::Call :isa(Kontinue) {
                 }
             }
             when ('Lambda') {
-                return Scope::Enter->new(
-                    env  => $self->bind_params( $ctx, $call, $args ),
-                    kont => Eval::Expr->new(
-                        expr => $call->body,
-                        kont => Scope::Leave->new(
-                            kont => $self->kont
-                        )
-                    )
+                return $ctx->wrap_in_scope(
+                    $self->bind_params( $ctx, $call, $args ),
+                    $call->body,
+                    $self->kont
                 )
             }
             default {
@@ -405,7 +428,7 @@ class Bind :isa(Kontinue) {
     method kontinue ($ctx, $value) {
         $self->DEBUG('name' => $name, '+value' => $value) if ::DEBUG;
         $ctx->define( $name, $value );
-        return $self->kont;
+        return $ctx->return_value( Nil->new, $self->kont );
     }
 
     method to_string {
@@ -484,6 +507,18 @@ class Strand::Ref :isa(Term) {
     method lookup ($s)     { $strand->lookup( $s ) }
     method define ($n, $v) { $strand->define( $n, $v ) }
 
+    method wrap_in_scope ($env, $body, $kont) {
+        Scope::Enter->new(
+            env  => $env,
+            kont => Eval::Expr->new(
+                expr => $body,
+                kont => Scope::Leave->new(
+                    kont => $kont
+                )
+            )
+        )
+    }
+
     method bind ($name, $expr, $kont=undef) {
         Eval::Expr->new(
             expr => $expr,
@@ -522,6 +557,8 @@ class Strand::Ref :isa(Term) {
         )
     }
 }
+
+## -----------------------------------------------------------------------------
 
 class Strand {
     field $ref   :reader;
@@ -575,12 +612,12 @@ class Strand {
         my $kont  = Scope::Leave->new( kont => Halt->new );
         my @exprs = ::LINKING_ENABLED ? map { $self->link( $env, $_ ) } @$exprs : @$exprs;
 
-        if (::PRECOMPILE_DEFUN) {
-            while (@exprs) {
-                if ($exprs[0] isa Cons
-                &&  $exprs[0]->head isa Callable
-                &&  $exprs[0]->head->name eq 'defun') {
-                    my ($name, $params, $body) = (shift @exprs)->tail->uncons;
+        if (::PRECOMPILE_DEFS) {
+            @exprs = map {
+                if ($_ isa Cons
+                &&  $_->head isa Callable
+                &&  $_->head->name eq 'defun') {
+                    my ($name, $params, $body) = $_->tail->uncons;
                     $env = $env->derive(
                         $name->ident, Lambda->new(
                             name   => $name,
@@ -589,10 +626,21 @@ class Strand {
                             env    => $env,
                         )
                     );
+                    ();
+                } elsif ($_ isa Cons
+                    &&  $_->head isa Callable
+                    &&  $_->head->name eq 'let') {
+                    my ($name, $value) = $_->tail->uncons;
+                    if ($value isa Literal) {
+                        $env = $env->derive( $name->ident, $value );
+                        ();
+                    } else {
+                        $_;
+                    }
                 } else {
-                    last;
+                    $_;
                 }
-            }
+            } @exprs;
         }
 
         foreach my $expr (reverse @exprs) {
@@ -615,7 +663,7 @@ class Strand {
 
     method resume {
         return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
-        return $self->execute( $self->throw_error(
+        return $self->execute( $self->ref->throw_error(
             "You can only resume from a Yield, not ".$self->prev_kont,
         ));
     }
@@ -684,14 +732,15 @@ my $env = Env->new(
         'defun' => Native->new(
             name => 'defun',
             proc => sub ($ctx, $name, $params, $body) {
-                my $f = Lambda->new(
-                    name   => $name,
-                    params => $params,
-                    body   => $body,
-                    env    => $ctx->current_env,
-                );
-                $ctx->define( $name, $f );
-                return $ctx->return_value( $f );
+                return $ctx->bind(
+                    $name,
+                    Lambda->new(
+                        name   => $name,
+                        params => $params,
+                        body   => $body,
+                        env    => $ctx->current_env,
+                    )
+                )
             },
             is_operative => true,
         ),
@@ -701,7 +750,9 @@ my $env = Env->new(
 my $parser = Parser->new;
 my $strand = Strand->new;
 
-my $exprs = $parser->parse(q[
+my $PRELUDE = join '' => grep !/^\s*$/, <DATA>;
+
+my $exprs = $parser->parse($PRELUDE.q[
 
 (defun fact (n)
     (if (== n 0) 1
@@ -726,7 +777,7 @@ say "COMPILED:";
 foreach my ($name, $f) ($compiled->env->DUMP) {
     say '    - ', $name, ' := ', $f;
 }
-say '    -> (main)';
+say '    + (main)';
 say '       ', $compiled;
 
 my @trace = $strand->run( $compiled );
@@ -741,29 +792,10 @@ if (TRACE) {
 }
 
 
-__END__
+__DATA__
 
-# NOTES:
 
-- create an EDB
-    - (assert! Bob :knows Alice)
-    - (query?  @_  :knows Alice)
-        - everyone that knows Alice
-    - (query?  @_  :knows @_ )
-        - every :knows relation
-    - (query?  (ne? Bob) :knows Alice)
-        - filtering, with a partial sub
-    - (query?  @_  :knows (Alice Carol))
-        - everyone that knows Alice and Carol
-    - (query?  %_  :knows (Alice Carol))
-        - two groups, one for Alice, the other for Carol
-    - (query? (and ($_ :parent Alice)
-                   ($_ :knows Bob)))
-        - do any of Alice's parents know Bob?
-    - (query? (and ($_ :parent @_)
-                   ($_ :knows Bob)))
-        - all the parents that know bob
-
+(let x 6)
 
 
 
