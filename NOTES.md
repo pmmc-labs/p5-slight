@@ -126,3 +126,76 @@
 
 ◳◰◲◳
 ```
+
+<!----------------------------------------------------------------------------->
+
+```
+## -----------------------------------------------------------------------------
+
+class Channel {
+    field @write;
+    field @read;
+
+    method can_read { !! scalar @read }
+
+    method read ($size=1) {
+        my @buffer;
+        while ($size--) {
+            push @buffer => shift @read;
+            last unless @read;
+        }
+        return @buffer;
+    }
+
+    method write (@terms) { push @write => @terms; return; }
+
+    method flush {
+        push @read => @write;
+        @write = ();
+        return $self->can_read;
+    }
+
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+
+## -----------------------------------------------------------------------------
+
+class TTY::Reader {
+    field $fh :param :reader = \*STDIN;
+    method read ($size=1) {
+        my @buffer;
+        push @buffer => $fh->readline while $size--;
+        return @buffer;
+    }
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+
+class TTY::Writer {
+    field $fh :param :reader = \*STDOUT;
+    method write (@terms) { print $fh @terms }
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+
+class TTY::Logger {
+    field $fh :param :reader = \*STDERR;
+    method write (@terms) { warn $fh @terms, "\n" }
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+
+class TTY::Channel :isa(Channel) {
+    field $reader :param :reader;
+    field $writer :param :reader;
+    method can_read { true }
+    method read ($size=undef) {
+        my @read = $reader->read(defined $size ? $size->raw : );
+        return Cons->of( map { Str->new(raw => $_) } @read )
+    }
+    method flush {
+        $writer->write( map $_->to_string, @write );
+        @write = ();
+        return true;
+    }
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+```
+
