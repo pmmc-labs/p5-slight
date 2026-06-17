@@ -4,9 +4,12 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
-use constant LINKING_ENABLED  => false;
-use constant OPTIMIZE_CALLS   => false;
-use constant PRECOMPILE_DEFUN => false;
+use constant DEBUG => !!$ENV{DEBUG};
+use constant TRACE => !!$ENV{TRACE};
+
+use constant LINKING_ENABLED  => true;
+use constant OPTIMIZE_CALLS   => true;
+use constant PRECOMPILE_DEFUN => true;
 
 ## -----------------------------------------------------------------------------
 
@@ -194,20 +197,16 @@ class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG(expr => $expr);
+        $self->DEBUG(expr => $expr) if ::DEBUG;
 
         given (blessed $expr) {
             when ('Cons') {
-                my $apply = Apply::Expr->new(
-                    args => $expr->tail,
-                    kont => $self->kont,
-                );
+                my $next = Apply::Expr->new( args => $expr->tail, kont => $self->kont );
 
-                my $next;
+                my $head;
                 if (::LINKING_ENABLED) {
-                    if ($expr->head isa Callable) {
-                        $next = $apply->kontinue( $ctx, $expr->head );
-                    }
+                    $head = $next->kontinue( $ctx, $expr->head )
+                        if $expr->head isa Callable;
                 }
 
                 if (::OPTIMIZE_CALLS) {
@@ -215,18 +214,18 @@ class Eval::Expr :isa(Kontinue) {
                         my $call = $ctx->lookup( $expr->head );
                         return $ctx->throw_error("Unable to find ".$expr->head." in Env", $self)
                             if not defined $call;
-                        $next = $apply->kontinue( $ctx, $call );
+                        $head = $next->kontinue( $ctx, $call );
                     }
                 }
 
                 if (::LINKING_ENABLED || ::OPTIMIZE_CALLS) {
-                    if ($next isa Eval::Args) {
-                        $next = $next->kontinue( $ctx );
+                    if (defined $head) {
+                        return $head->kontinue( $ctx ) if $head isa Eval::Args;
+                        return $head;
                     }
-                    return $next if defined $next;
                 }
 
-                return Eval::Expr->new( expr => $expr->head, kont => $apply );
+                return Eval::Expr->new( expr => $expr->head, kont => $next );
             }
             when ('Sym') {
                 my $value = $ctx->lookup($expr);
@@ -249,41 +248,25 @@ class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
     method kontinue ($ctx, $call) {
-        $self->DEBUG(args => $args, '+call' => $call);
+        $self->DEBUG(args => $args, '+call' => $call) if ::DEBUG;
 
-        if ($call->is_operative) {
-            return $ctx->return_value( $args,
-                Apply::Call->new(
-                    call => $call,
-                    kont => $self->kont,
-                )
-            );
-        } else {
-            if (::OPTIMIZE_CALLS) {
-                my $next = Apply::Call->new( call => $call, kont => $self->kont );
-                if ($args->is_nil) {
-                    return $next;
-                }
-                elsif ($args->tail->is_nil) {
-                    if ($args->head isa Literal) {
-                        return $ctx->return_value( Cons->of( $args->head ), $next )
-                    }
-                    else {
-                        return Eval::Expr->new( expr => $args->head, kont => $next )
-                    }
-                }
-                else {
-                    return Eval::Args->new( rest => $args, kont => $next )
-                }
+        my $next = Apply::Call->new( call => $call, kont => $self->kont );
+
+        return $ctx->return_value( $args, $next ) if $call->is_operative;
+
+        if (::OPTIMIZE_CALLS) {
+            if ($args->is_nil) {
+                return $next;
+            } elsif ($args->tail->is_nil) {
+                return $ctx->return_value( Cons->of( $args->head ), $next )
+                    if $args->head isa Literal;
+                return Eval::Expr->new( expr => $args->head, kont => $next );
+            } else {
+                return Eval::Args->new( rest => $args, kont => $next )
             }
-            return Eval::Args->new(
-                rest => $args,
-                kont => Apply::Call->new(
-                    call => $call,
-                    kont => $self->kont,
-                )
-            )
         }
+
+        return Eval::Args->new( rest => $args, kont => $next )
     }
 
     method to_string {
@@ -296,7 +279,7 @@ class Eval::Args :isa(Kontinue) {
     field $done :param :reader = Nil->new;
 
     method kontinue ($ctx, $value=undef) {
-        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?');
+        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?') if ::DEBUG;
 
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
@@ -338,29 +321,31 @@ class Apply::Call :isa(Kontinue) {
             if $call->has_name;
 
         my $params = $call->params;
-        until ($params->is_nil) {
-            return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
-                if $args->is_nil;
-            $local{ $params->head->ident } = $args->head;
-            $params = $params->tail;
-            $args   = $args->tail;
+        if ($args isa List) {
+            until ($params->is_nil) {
+                return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
+                    if $args->is_nil;
+                $local{ $params->head->ident } = $args->head;
+                $params = $params->tail;
+                $args   = $args->tail;
+            }
+            return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
+                unless $args->is_nil;
+        } else {
+            return $ctx->throw_error("Arity Mismatch - additional:${args}", $self) if $params->is_nil;
+            return $ctx->throw_error("Arity Mismatch - missing:${params}",  $self) unless $params->tail->is_nil;
+            $local{ $params->head->ident } = $args;
         }
-        return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
-            unless $args->is_nil;
 
         return $call->env->derive( %local );
     }
 
     method kontinue ($ctx, $args) {
-        $self->DEBUG(call => $call, '+args' => $args);
-
-        if (::OPTIMIZE_CALLS) {
-            $args = Cons->of( $args ) unless $args isa List;
-        }
+        $self->DEBUG(call => $call, '+args' => $args) if ::DEBUG;
 
         given (blessed $call) {
             when ('Native') {
-                my @args = $args->uncons;
+                my @args = $args isa List ? $args->uncons : $args;
                 if ($call->is_operative) {
                     return $call->proc->( $ctx, @args );
                 } else {
@@ -392,19 +377,19 @@ class Apply::Call :isa(Kontinue) {
 class Scope::Enter :isa(Kontinue) {
     field $env :param :reader;
     method kontinue ($ctx) {
-        $self->DEBUG;
+        $self->DEBUG if ::DEBUG;
         $ctx->enter_scope( $env );
         return $self->kont;
     }
 
     method to_string {
-        return sprintf '%s[%s] > %s', __CLASS__, $env, $self->kont->to_string;
+        return sprintf '%s[%s] > %s', __CLASS__, ($env =~ /(0x.*)\)$/), $self->kont->to_string;
     }
 }
 
 class Scope::Leave :isa(Kontinue) {
     method kontinue ($ctx, $result) {
-        $self->DEBUG('+result' => $result);
+        $self->DEBUG('+result' => $result) if ::DEBUG;
         $ctx->leave_scope;
         return $ctx->return_value( $result, $self->kont );
     }
@@ -413,7 +398,7 @@ class Scope::Leave :isa(Kontinue) {
 class Bind :isa(Kontinue) {
     field $name :param :reader;
     method kontinue ($ctx, $value) {
-        $self->DEBUG('name' => $name, '+value' => $value);
+        $self->DEBUG('name' => $name, '+value' => $value) if ::DEBUG;
         $ctx->define( $name, $value );
         return $self->kont;
     }
@@ -439,7 +424,7 @@ class Return :isa(Kontinue) {
     field $value :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG('value' => $value);
+        $self->DEBUG('value' => $value) if ::DEBUG;
         return $self->kont;
     }
 
@@ -450,14 +435,14 @@ class Return :isa(Kontinue) {
 
 class Drop :isa(Kontinue) {
     method kontinue ($ctx, $dropped) {
-        $self->DEBUG('-dropped' => $dropped);
+        $self->DEBUG('-dropped' => $dropped) if ::DEBUG;
         return $self->kont;
     }
 }
 
 class Yield :isa(Kontinue) {
     method kontinue ($ctx) {
-        $self->DEBUG;
+        $self->DEBUG if ::DEBUG;
         return undef;
     }
 }
@@ -466,18 +451,22 @@ class Error :isa(Kontinue) {
     field $error :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG('error' => $error);
+        $self->DEBUG('error' => $error) if ::DEBUG;
         return undef;
     }
 }
 
 class Halt :isa(Kontinue) {
-    field $result;
+    field $result :reader;
 
     method kontinue ($ctx, $r) {
-        $self->DEBUG('+result' => $r);
+        $self->DEBUG('+result' => $r) if ::DEBUG;
         $result = $r;
         return undef;
+    }
+
+    method to_string {
+        return sprintf '%s!! %s', __CLASS__, defined $result ? $result->to_string : '??';
     }
 }
 
@@ -710,17 +699,23 @@ my $exprs = $parser->parse(q[
 ]);
 
 say "PARSED:";
-say $_ foreach @$exprs;
+say '    - ', $_ foreach @$exprs;
 
 my $compiled = $strand->kompile( $env, $exprs );
 
 say "COMPILED:";
-say $compiled;
+say '    - ', $compiled;
 
-say "TRACE:";
 my @trace = $strand->run( $compiled );
-say join "\n" => @trace;
 say "STEPS: ", scalar @trace;
+
+if (TRACE) {
+    say "TRACE:";
+    say join "\n" => @trace;
+} else {
+    say "GOT:";
+    say '    - ', @trace[-1];
+}
 
 
 __END__
