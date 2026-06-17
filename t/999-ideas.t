@@ -7,7 +7,6 @@ use experimental qw[ class switch ];
 use constant DEBUG => $ENV{DEBUG} // 0;
 use constant TRACE => $ENV{TRACE} // 0;
 
-use constant LINKING_ENABLED => true;
 use constant OPTIMIZE_CALLS  => true;
 use constant PRECOMPILE_DEFS => true;
 
@@ -63,6 +62,7 @@ class Parser {
     }
 
     method parse ($source) {
+        @stack = (+[]);
         my @tokens = $self->tokenizer($source);
         while (@tokens) {
             my $token = shift @tokens;
@@ -255,22 +255,18 @@ class Eval::Expr :isa(Kontinue) {
             when ('Cons') {
                 my $next = Apply::Expr->new( args => $expr->tail, kont => $self->kont );
 
-                my $head;
-                if (::LINKING_ENABLED) {
-                    $head = $next->kontinue( $ctx, $expr->head )
-                        if $expr->head isa Callable;
-                }
-
                 if (::OPTIMIZE_CALLS) {
-                    if ($expr->head isa Sym) {
+                    my $head;
+                    if ($expr->head isa Callable) {
+                        $head = $next->kontinue( $ctx, $expr->head );
+                    }
+                    elsif ($expr->head isa Sym) {
                         my $call = $ctx->lookup( $expr->head );
                         return $ctx->throw_error("Unable to find ".$expr->head." in Env", $self)
                             if not defined $call;
                         $head = $next->kontinue( $ctx, $call );
                     }
-                }
 
-                if (::LINKING_ENABLED || ::OPTIMIZE_CALLS) {
                     if (defined $head) {
                         return $head->kontinue( $ctx ) if $head isa Eval::Args;
                         return $head;
@@ -520,8 +516,72 @@ class Halt :isa(Kontinue) {
 
 ## -----------------------------------------------------------------------------
 
+class Compiler {
+    method link ($env, $expr) {
+        given (blessed $expr) {
+            when ('Cons') {
+                return Cons->of( map { $self->link( $env, $_ ) } $expr->uncons );
+            }
+            when ('Sym') {
+                return $env->lookup($expr) // $expr;
+            }
+            default {
+                return $expr;
+            }
+        }
+    }
+
+    method compile ($env, $exprs) {
+        my $kont  = Scope::Leave->new( kont => Halt->new );
+        my @exprs = map { $self->link( $env, $_ ) } @$exprs;
+
+        if (::PRECOMPILE_DEFS) {
+            @exprs = map {
+                if ($_ isa Cons
+                &&  $_->head isa Callable
+                &&  $_->head->name eq 'defun') {
+                    my ($name, $params, $body) = $_->tail->uncons;
+                    $env = $env->derive(
+                        $name->ident, Lambda->new(
+                            name   => $name,
+                            params => $params,
+                            body   => $body,
+                            env    => $env,
+                        )
+                    );
+                    $STATS{DEFINITIONS}->{COMPILETIME}++;
+                    ();
+                } elsif ($_ isa Cons
+                    &&  $_->head isa Callable
+                    &&  $_->head->name eq 'let') {
+                    my ($name, $value) = $_->tail->uncons;
+                    if ($value isa Literal) {
+                        $env = $env->derive( $name->ident, $value );
+                        $STATS{DEFINITIONS}->{COMPILETIME}++;
+                        ();
+                    } else {
+                        $_;
+                    }
+                } else {
+                    $_;
+                }
+            } @exprs;
+        }
+
+        foreach my $expr (reverse @exprs) {
+            $kont = Eval::Expr->new(
+                expr => $expr,
+                kont => ($kont isa Scope::Leave)
+                        ? $kont
+                        : Drop->new( kont => $kont ));
+        }
+        return Scope::Enter->new( env => $env, kont => $kont );
+    }
+}
+
+
 class Strand::Ref {
-    field $strand :param :reader;
+    field $strand :param :reader; # NOTE: weaken this
 
     method current_env     { $strand->current_env }
     method lookup ($s)     { $strand->lookup( $s ) }
@@ -583,6 +643,8 @@ class Strand::Ref {
 ## -----------------------------------------------------------------------------
 
 class Strand {
+    field $host :param :reader;
+
     field $ref   :reader;
     field $steps :reader;
     field @trace :reader;
@@ -620,67 +682,6 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
-    method link ($env, $expr) {
-        given (blessed $expr) {
-            when ('Cons') {
-                return Cons->of( map { $self->link( $env, $_ ) } $expr->uncons );
-            }
-            when ('Sym') {
-                return $env->lookup($expr) // $expr;
-            }
-            default {
-                return $expr;
-            }
-        }
-    }
-
-    method kompile ($env, $exprs) {
-        my $kont  = Scope::Leave->new( kont => Halt->new );
-        my @exprs = ::LINKING_ENABLED ? map { $self->link( $env, $_ ) } @$exprs : @$exprs;
-
-        if (::PRECOMPILE_DEFS) {
-            @exprs = map {
-                if ($_ isa Cons
-                &&  $_->head isa Callable
-                &&  $_->head->name eq 'defun') {
-                    my ($name, $params, $body) = $_->tail->uncons;
-                    $env = $env->derive(
-                        $name->ident, Lambda->new(
-                            name   => $name,
-                            params => $params,
-                            body   => $body,
-                            env    => $env,
-                        )
-                    );
-                    $STATS{DEFINITIONS}->{COMPILETIME}++;
-                    ();
-                } elsif ($_ isa Cons
-                    &&  $_->head isa Callable
-                    &&  $_->head->name eq 'let') {
-                    my ($name, $value) = $_->tail->uncons;
-                    if ($value isa Literal) {
-                        $env = $env->derive( $name->ident, $value );
-                        $STATS{DEFINITIONS}->{COMPILETIME}++;
-                        ();
-                    } else {
-                        $_;
-                    }
-                } else {
-                    $_;
-                }
-            } @exprs;
-        }
-
-        foreach my $expr (reverse @exprs) {
-            $kont = Eval::Expr->new(
-                expr => $expr,
-                kont => ($kont isa Scope::Leave)
-                        ? $kont
-                        : Drop->new( kont => $kont ));
-        }
-        return Scope::Enter->new( env => $env, kont => $kont );
-    }
-
     method run ($kont) {
         while (defined $kont) {
             push @trace => $kont;
@@ -712,75 +713,93 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
-my $env = Env->new(
-    bindings => +{
-        '+' => Native->new( name => '+', proc => sub ($n, $m) { Num->new( raw => $n->raw + $m->raw ) }),
-        '-' => Native->new( name => '-', proc => sub ($n, $m) { Num->new( raw => $n->raw - $m->raw ) }),
-        '*' => Native->new( name => '*', proc => sub ($n, $m) { Num->new( raw => $n->raw * $m->raw ) }),
-        '/' => Native->new( name => '/', proc => sub ($n, $m) { Num->new( raw => $n->raw / $m->raw ) }),
-        '%' => Native->new( name => '%', proc => sub ($n, $m) { Num->new( raw => $n->raw % $m->raw ) }),
+class Runtime {
+    field $root_env :reader;
+    field $compiler :reader;
+    field $parser   :reader;
 
-        '==' => Native->new( name => '==', proc => sub ($n, $m) { $n->raw == $m->raw ? Bool->TRUE : Bool->FALSE }),
-        '!=' => Native->new( name => '!=', proc => sub ($n, $m) { $n->raw != $m->raw ? Bool->TRUE : Bool->FALSE }),
-        '<=' => Native->new( name => '<=', proc => sub ($n, $m) { $n->raw <= $m->raw ? Bool->TRUE : Bool->FALSE }),
-        '>=' => Native->new( name => '>=', proc => sub ($n, $m) { $n->raw >= $m->raw ? Bool->TRUE : Bool->FALSE }),
-        '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
-        '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
-
-        'lambda' => Native->new(
-            name => 'lambda',
-            proc => sub ($ctx, $p, $b) {
-                $ctx->return_value(
-                    Lambda->new( params => $p, body => $b, env => $ctx->current_env )
-                )
-            },
-            is_operative => true,
-        ),
-
-        'if' => Native->new(
-            name => 'if',
-            proc => sub ($ctx, $condition, $if_true, $if_false) {
-                $ctx->conditional( $condition, $if_true, $if_false )
-            },
-            is_operative => true,
-        ),
-
-        'yield' => Native->new(
-            name => 'yield',
-            proc => sub ($ctx, $expr) { $ctx->yield( $expr ) },
-            is_operative => true,
-        ),
-
-        'let' => Native->new(
-            name => 'let',
-            proc => sub ($ctx, $name, $value) { $ctx->bind( $name, $value ) },
-            is_operative => true,
-        ),
-
-        'defun' => Native->new(
-            name => 'defun',
-            proc => sub ($ctx, $name, $params, $body) {
-                return $ctx->bind(
-                    $name,
-                    Lambda->new(
-                        name   => $name,
-                        params => $params,
-                        body   => $body,
-                        env    => $ctx->current_env,
-                    )
-                )
-            },
-            is_operative => true,
-        ),
+    ADJUST {
+        $root_env = $self->initialize_root_env;
+        $parser   = Parser->new;
+        $compiler = Compiler->new;
     }
-);
 
-my $parser = Parser->new;
-my $strand = Strand->new;
+    method parse ($src) { $parser->parse($src) }
+
+    method compile ($env, $exprs) { $compiler->compile( $env, $exprs ) }
+
+    method create_strand { Strand->new( host => $self ) }
+
+    method initialize_root_env {
+        return Env->new(
+            bindings => +{
+                '+' => Native->new( name => '+', proc => sub ($n, $m) { Num->new( raw => $n->raw + $m->raw ) }),
+                '-' => Native->new( name => '-', proc => sub ($n, $m) { Num->new( raw => $n->raw - $m->raw ) }),
+                '*' => Native->new( name => '*', proc => sub ($n, $m) { Num->new( raw => $n->raw * $m->raw ) }),
+                '/' => Native->new( name => '/', proc => sub ($n, $m) { Num->new( raw => $n->raw / $m->raw ) }),
+                '%' => Native->new( name => '%', proc => sub ($n, $m) { Num->new( raw => $n->raw % $m->raw ) }),
+
+                '==' => Native->new( name => '==', proc => sub ($n, $m) { $n->raw == $m->raw ? Bool->TRUE : Bool->FALSE }),
+                '!=' => Native->new( name => '!=', proc => sub ($n, $m) { $n->raw != $m->raw ? Bool->TRUE : Bool->FALSE }),
+                '<=' => Native->new( name => '<=', proc => sub ($n, $m) { $n->raw <= $m->raw ? Bool->TRUE : Bool->FALSE }),
+                '>=' => Native->new( name => '>=', proc => sub ($n, $m) { $n->raw >= $m->raw ? Bool->TRUE : Bool->FALSE }),
+                '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
+                '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
+
+                'lambda' => Native->new(
+                    name => 'lambda',
+                    proc => sub ($ctx, $p, $b) {
+                        $ctx->return_value( Lambda->new( params => $p, body => $b, env => $ctx->current_env ) )
+                    },
+                    is_operative => true,
+                ),
+
+                'if' => Native->new(
+                    name => 'if',
+                    proc => sub ($ctx, $condition, $if_true, $if_false) {
+                        $ctx->conditional( $condition, $if_true, $if_false )
+                    },
+                    is_operative => true,
+                ),
+
+                'yield' => Native->new(
+                    name => 'yield',
+                    proc => sub ($ctx, $expr) { $ctx->yield( $expr ) },
+                    is_operative => true,
+                ),
+
+                'let' => Native->new(
+                    name => 'let',
+                    proc => sub ($ctx, $name, $value) { $ctx->bind( $name, $value ) },
+                    is_operative => true,
+                ),
+
+                'defun' => Native->new(
+                    name => 'defun',
+                    proc => sub ($ctx, $name, $params, $body) {
+                        return $ctx->bind(
+                            $name,
+                            Lambda->new(
+                                name   => $name,
+                                params => $params,
+                                body   => $body,
+                                env    => $ctx->current_env,
+                            )
+                        )
+                    },
+                    is_operative => true,
+                ),
+            }
+        )
+    }
+}
+
+my $host = Runtime->new;
+
 
 #my $PRELUDE = join '' => grep !/^\s*$/, <DATA>;
 
-my $exprs = $parser->parse(q[
+my $exprs = $host->parse(q[
 
 (defun fact (n)
     (if (== n 0) 1
@@ -797,7 +816,7 @@ my $exprs = $parser->parse(q[
 say "PARSED:";
 say '    - ', $_ foreach @$exprs;
 
-my $compiled = $strand->kompile( $env, $exprs );
+my $compiled = $host->compile( $host->root_env, $exprs );
 
 say "COMPILED:";
 foreach my ($name, $f) ($compiled->env->DUMP) {
@@ -806,7 +825,7 @@ foreach my ($name, $f) ($compiled->env->DUMP) {
 say '    + (main)';
 say '       ', $compiled;
 
-my @trace = $strand->run( $compiled );
+my @trace = $host->create_strand->run( $compiled );
 
 say "STATS:";
 say "    STEPS : ", scalar @trace;
