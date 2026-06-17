@@ -3,6 +3,11 @@ use v5.42;
 use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
+
+use constant LINKING_ENABLED  => false;
+use constant OPTIMIZE_CALLS   => false;
+use constant PRECOMPILE_DEFUN => false;
+
 ## -----------------------------------------------------------------------------
 
 class Parser {
@@ -199,13 +204,13 @@ class Eval::Expr :isa(Kontinue) {
                 );
 
                 my $next;
-                if ($ENV{TEST} >= 1) {
+                if (::LINKING_ENABLED) {
                     if ($expr->head isa Callable) {
                         $next = $apply->kontinue( $ctx, $expr->head );
                     }
                 }
 
-                if ($ENV{TEST} >= 2) {
+                if (::OPTIMIZE_CALLS) {
                     if ($expr->head isa Sym) {
                         my $call = $ctx->lookup( $expr->head );
                         return $ctx->throw_error("Unable to find ".$expr->head." in Env", $self)
@@ -214,13 +219,12 @@ class Eval::Expr :isa(Kontinue) {
                     }
                 }
 
-                if ($ENV{TEST} >= 4) {
+                if (::LINKING_ENABLED || ::OPTIMIZE_CALLS) {
                     if ($next isa Eval::Args) {
                         $next = $next->kontinue( $ctx );
                     }
+                    return $next if defined $next;
                 }
-
-                return $next if defined $next;
 
                 return Eval::Expr->new( expr => $expr->head, kont => $apply );
             }
@@ -255,7 +259,7 @@ class Apply::Expr :isa(Kontinue) {
                 )
             );
         } else {
-            if ($ENV{TEST} >= 6) {
+            if (::OPTIMIZE_CALLS) {
                 my $next = Apply::Call->new( call => $call, kont => $self->kont );
                 if ($args->is_nil) {
                     return $next;
@@ -297,7 +301,7 @@ class Eval::Args :isa(Kontinue) {
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
 
-        if ($ENV{TEST} >= 3)  {
+        if (::OPTIMIZE_CALLS)  {
             until ($rest->is_nil) {
                 last unless $rest->head isa Literal;
                 $done = Cons->new( head => $rest->head, tail => $done );
@@ -350,7 +354,7 @@ class Apply::Call :isa(Kontinue) {
     method kontinue ($ctx, $args) {
         $self->DEBUG(call => $call, '+args' => $args);
 
-        if ($ENV{TEST} >= 6) {
+        if (::OPTIMIZE_CALLS) {
             $args = Cons->of( $args ) unless $args isa List;
         }
 
@@ -561,9 +565,9 @@ class Strand {
 
     method kompile ($env, $exprs) {
         my $kont  = Scope::Leave->new( kont => Halt->new );
-        my @exprs = map { $self->link( $env, $_ ) } @$exprs;
+        my @exprs = ::LINKING_ENABLED ? map { $self->link( $env, $_ ) } @$exprs : @$exprs;
 
-        if ($ENV{TEST} >= 5) {
+        if (::PRECOMPILE_DEFUN) {
             while (@exprs) {
                 if ($exprs[0] isa Cons
                 &&  $exprs[0]->head isa Callable
@@ -719,6 +723,28 @@ say join "\n" => @trace;
 say "STEPS: ", scalar @trace;
 
 
+__END__
+
+# NOTES:
+
+- create an EDB
+    - (assert! Bob :knows Alice)
+    - (query?  @_  :knows Alice)
+        - everyone that knows Alice
+    - (query?  @_  :knows @_ )
+        - every :knows relation
+    - (query?  (ne? Bob) :knows Alice)
+        - filtering, with a partial sub
+    - (query?  @_  :knows (Alice Carol))
+        - everyone that knows Alice and Carol
+    - (query?  %_  :knows (Alice Carol))
+        - two groups, one for Alice, the other for Carol
+    - (query? (and ($_ :parent Alice)
+                   ($_ :knows Bob)))
+        - do any of Alice's parents know Bob?
+    - (query? (and ($_ :parent @_)
+                   ($_ :knows Bob)))
+        - all the parents that know bob
 
 
 
