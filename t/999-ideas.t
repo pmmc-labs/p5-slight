@@ -7,9 +7,9 @@ use experimental qw[ class switch ];
 use constant DEBUG => !!$ENV{DEBUG};
 use constant TRACE => !!$ENV{TRACE};
 
-use constant LINKING_ENABLED  => true;
-use constant OPTIMIZE_CALLS   => true;
-use constant PRECOMPILE_DEFUN => true;
+use constant LINKING_ENABLED  => !$ENV{STEP};
+use constant OPTIMIZE_CALLS   => !$ENV{STEP};
+use constant PRECOMPILE_DEFUN => !$ENV{STEP};
 
 ## -----------------------------------------------------------------------------
 
@@ -162,6 +162,11 @@ class Env {
 
     method derive (%bindings) {
         return Env->new( parent => $self, bindings => \%bindings )
+    }
+
+    method DUMP {
+        return () unless defined $parent;
+        return %$bindings, $parent->DUMP;
     }
 }
 
@@ -378,7 +383,7 @@ class Scope::Enter :isa(Kontinue) {
     field $env :param :reader;
     method kontinue ($ctx) {
         $self->DEBUG if ::DEBUG;
-        $ctx->enter_scope( $env );
+        $ctx->strand->enter_scope( $env );
         return $self->kont;
     }
 
@@ -390,7 +395,7 @@ class Scope::Enter :isa(Kontinue) {
 class Scope::Leave :isa(Kontinue) {
     method kontinue ($ctx, $result) {
         $self->DEBUG('+result' => $result) if ::DEBUG;
-        $ctx->leave_scope;
+        $ctx->strand->leave_scope;
         return $ctx->return_value( $result, $self->kont );
     }
 }
@@ -472,16 +477,68 @@ class Halt :isa(Kontinue) {
 
 ## -----------------------------------------------------------------------------
 
+class Strand::Ref :isa(Term) {
+    field $strand :param :reader;
+
+    method current_env     { $strand->current_env }
+    method lookup ($s)     { $strand->lookup( $s ) }
+    method define ($n, $v) { $strand->define( $n, $v ) }
+
+    method bind ($name, $expr, $kont=undef) {
+        Eval::Expr->new(
+            expr => $expr,
+            kont => Bind->new(
+                name => $name,
+                kont => $kont // $strand->next_kont
+            )
+        )
+    }
+
+    method throw_error ($error, $kont=undef) {
+        Error->new( error => $error, kont => $kont // $strand->next_kont )
+    }
+
+    method return_value ($value, $kont=undef) {
+        Return->new( value => $value, kont => $kont // $strand->next_kont )
+    }
+
+    method conditional ($condition, $if_true, $if_false, $kont=undef) {
+        Eval::Expr->new(
+            expr => $condition,
+            kont => Cond->new(
+                if_true  => $if_true,
+                if_false => $if_false,
+                kont     => $kont // $strand->next_kont,
+            )
+        )
+    }
+
+    method yield ($expr, $kont=undef) {
+        Yield->new(
+            kont => Eval::Expr->new(
+                expr => $expr,
+                kont => $kont // $strand->next_kont
+            )
+        )
+    }
+}
+
 class Strand {
-    field $step = 0;
-    field @trace;
-    field @environments;
+    field $ref   :reader;
+    field $steps :reader;
+    field @trace :reader;
+    field @envs  :reader;
+
+    ADJUST {
+        $ref   = Strand::Ref->new( strand => $self );
+        $steps = 0;
+    }
 
     ## -------------------------------------------------------------------------
 
-    method enter_scope ($e) { push @environments => [ $e ] }
-    method leave_scope      { pop @environments }
-    method current_scope    { $environments[-1] }
+    method enter_scope ($e) { push @envs => [ $e ] }
+    method leave_scope      { pop @envs }
+    method current_scope    { $envs[-1] }
     method current_env      { $self->current_scope->[-1] }
 
     method lookup ($sym) {
@@ -497,44 +554,6 @@ class Strand {
 
     method prev_kont { $trace[-1] }
     method next_kont { $trace[-1]->kont }
-
-    method bind ($name, $expr, $kont=undef) {
-        Eval::Expr->new(
-            expr => $expr,
-            kont => Bind->new(
-                name => $name,
-                kont => $kont // $self->next_kont($kont)
-            )
-        )
-    }
-
-    method throw_error ($error, $kont=undef) {
-        Error->new( error => $error, kont => $kont // $self->next_kont($kont) )
-    }
-
-    method return_value ($value, $kont=undef) {
-        Return->new( value => $value, kont => $kont // $self->next_kont($kont) )
-    }
-
-    method conditional ($condition, $if_true, $if_false, $kont=undef) {
-        Eval::Expr->new(
-            expr => $condition,
-            kont => Cond->new(
-                if_true  => $if_true,
-                if_false => $if_false,
-                kont     => $kont // $self->next_kont($kont),
-            )
-        )
-    }
-
-    method yield ($expr, $kont=undef) {
-        Yield->new(
-            kont => Eval::Expr->new(
-                expr => $expr,
-                kont => $kont // $self->next_kont($kont)
-            )
-        )
-    }
 
     ## -------------------------------------------------------------------------
 
@@ -602,14 +621,14 @@ class Strand {
     }
 
     method step ($kont) {
-        $step++;
+        $steps++;
         given (blessed $kont) {
             when ('Return') {
                 push @trace => $kont->kont;
-                return $kont->kont->kontinue( $self, $kont->value );
+                return $kont->kont->kontinue( $self->ref, $kont->value );
             }
             default {
-                return $kont->kontinue( $self );
+                return $kont->kontinue( $self->ref );
             }
         }
     }
@@ -704,7 +723,11 @@ say '    - ', $_ foreach @$exprs;
 my $compiled = $strand->kompile( $env, $exprs );
 
 say "COMPILED:";
-say '    - ', $compiled;
+foreach my ($name, $f) ($compiled->env->DUMP) {
+    say '    - ', $name, ' := ', $f;
+}
+say '    -> (main)';
+say '       ', $compiled;
 
 my @trace = $strand->run( $compiled );
 say "STEPS: ", scalar @trace;
@@ -714,7 +737,7 @@ if (TRACE) {
     say join "\n" => @trace;
 } else {
     say "GOT:";
-    say '    - ', @trace[-1];
+    say '    - ', $trace[-1];
 }
 
 
