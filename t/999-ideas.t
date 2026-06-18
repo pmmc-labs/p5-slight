@@ -499,20 +499,21 @@ class Halt :isa(Kontinue) {
 }
 
 class Channel::Read :isa(Kontinue) {
-    field $channel :reader :param;
-
-    method kontinue ($ctx) {
+    method kontinue ($ctx, $channel) {
         $self->DEBUG if ::DEBUG;
-        return undef;
+        if (my $value = $channel->read) {
+            return $ctx->return_value( $value, $self->kont );
+        } else {
+            return Yield->new( kont => $self );
+        }
     }
 }
 
 class Channel::Write :isa(Kontinue) {
-    field $channel :reader :param;
-
-    method kontinue ($ctx, $value) {
-        $self->DEBUG('+value', $value) if ::DEBUG;
-        $channel->write($value);
+    method kontinue ($ctx, $args) {
+        $self->DEBUG('+args', $args) if ::DEBUG;
+        my ($channel, $value) = $args->uncons;
+        $channel->write( $value );
         return $ctx->return_value( Nil->new, $self->kont );
     }
 }
@@ -643,19 +644,21 @@ class Strand::Ref {
         )
     }
 
-    method read_from_channel (@args) {
-        my ($channel, $kont) = @args;
-        Channel::Read->new(
-            channel => ($channel // $strand->stdin),
-            kont    => ($kont    // $strand->next_kont),
+    method read_from_channel ($channel, $kont=undef) {
+        Eval::Expr->new(
+            expr => $channel,
+            kont => Channel::Read->new(
+                kont => $kont // $strand->next_kont,
+            )
         )
     }
 
-    method write_to_channel (@args) {
-        my ($channel, $kont) = @args;
-        Channel::Write->new(
-            channel => ($channel // $strand->stdout),
-            kont    => ($kont    // $strand->next_kont),
+    method write_to_channel ($channel, $expr, $kont=undef) {
+        Eval::Args->new(
+            rest => Cons->of( $channel, $expr ),
+            kont => Channel::Write->new(
+                kont => $kont // $strand->next_kont,
+            )
         )
     }
 
@@ -664,7 +667,7 @@ class Strand::Ref {
 
 ## -----------------------------------------------------------------------------
 
-class Strand::Channel :isa(Term) {
+class Channel :isa(Term) {
     field $name :param :reader = undef;
 
     field @buffer;
@@ -684,30 +687,18 @@ class Strand::Channel :isa(Term) {
     }
 }
 
-class Strand::Channel::TTY :isa(Strand::Channel) {
-    method read { return Str->new( raw => my $input = <> ) }
-    method write ($t) { print $t->to_string }
-    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
-}
-
 ## -----------------------------------------------------------------------------
 
 class Strand {
     field $host  :param :reader;
     field $enter :param :reader;
 
-    field $stdin  :reader;
-    field $stdout :reader;
     field $ref    :reader;
     field $steps  :reader;
     field @trace  :reader;
     field @envs   :reader;
 
     ADJUST {
-        #$stdin  = Strand::Channel::TTY->new( name => 'STDIN' );
-        #$stdout = Strand::Channel::TTY->new( name => 'STDOUT');
-        $stdin = Strand::Channel->new;
-        $stdout = $stdin;
         $ref    = Strand::Ref->new( strand => $self );
         $steps  = 0;
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
@@ -762,14 +753,6 @@ class Strand {
                 push @trace => $kont->kont;
                 return $kont->kont->kontinue( $self->ref, $kont->value );
             }
-            when ('Channel::Read') {
-                my $ch = $kont->channel;
-                if (my $value = $ch->read) {
-                    return $self->ref->return_value( $value, $kont->kont );
-                } else {
-                    return Yield->new( kont => $kont );
-                }
-            }
             default {
                 return $kont->kontinue( $self->ref );
             }
@@ -779,15 +762,25 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
+class Channel::TTY :isa(Channel) {
+    method read { return Str->new( raw => my $input = <> ) }
+    method write ($t) { print $t->to_string }
+    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
+}
+
 class Runtime {
     field $root_env :reader;
     field $compiler :reader;
     field $parser   :reader;
+    field $stdin    :reader;
+    field $stdout   :reader;
 
     ADJUST {
         $root_env = $self->initialize_root_env;
         $parser   = Parser->new;
         $compiler = Compiler->new;
+        $stdin    = Channel::TTY->new( name => 'STDIN' );
+        $stdout   = Channel::TTY->new( name => 'STDOUT');
 
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
@@ -860,17 +853,27 @@ class Runtime {
                     is_operative => true,
                 ),
 
+                '*stdin' => Native->new(
+                    name => '*stdin',
+                    proc => sub ($ctx) { $ctx->return_value( $ctx->strand->host->stdin ) },
+                    is_operative => true,
+                ),
+
+                '*stdout' => Native->new(
+                    name => '*stdout',
+                    proc => sub ($ctx) { $ctx->return_value( $ctx->strand->host->stdout ) },
+                    is_operative => true,
+                ),
+
                 'read' => Native->new(
                     name => 'read',
-                    proc => sub ($ctx) { $ctx->read_from_channel },
+                    proc => sub ($ctx, $ch) { $ctx->read_from_channel( $ch ) },
                     is_operative => true,
                 ),
 
                 'write' => Native->new(
                     name => 'write',
-                    proc => sub ($ctx, $expr) {
-                        Eval::Expr->new( expr => $expr, kont => $ctx->write_to_channel )
-                    },
+                    proc => sub ($ctx, $ch, $expr) { $ctx->write_to_channel( $ch, $expr ) },
                     is_operative => true,
                 ),
 
@@ -882,8 +885,8 @@ class Runtime {
 my $host  = Runtime->new;
 my $exprs = $host->parse(q[
 
-(write 10)
-(let x (read))
+(let x (read (*stdin)))
+
 x
 
 ]);
