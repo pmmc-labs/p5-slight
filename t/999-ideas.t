@@ -983,8 +983,7 @@ my $actors = q[
         (do
             (say "! PING IS DONE, SENDING 0 TO PONG!")
             (send $out 0)
-            (say "> PING IS DONE!")
-        ))))
+            (say "> PING IS DONE!")))))
 
 (defun PONG ($in $out) (do
     (say "> PONG IS LOOKING FOR A MESSAGE ...")
@@ -1036,37 +1035,37 @@ say '=' x 80;
 my @channels = ($ping_chan, $pong_chan);
 my @queue    = ($pinger, $ponger);
 while (true) {
-    say "Flushing channels ... ";
+    #say "Flushing channels ... ";
     $_->flush foreach @channels;
-    say '-' x 80;
-    say "  ->ping: ",$ping_chan->DUMP;
-    say "  ->pong: ",$pong_chan->DUMP;
-    say '=' x 80;
+    #say '-' x 80;
+    #say "  ->ping: ",$ping_chan->DUMP;
+    #say "  ->pong: ",$pong_chan->DUMP;
+    #say '=' x 80;
     my $strand = shift @queue;
     say "Running ... ",$names{$strand},' @ ',$strand->steps;
-    say '-' x 80;
+    #say '-' x 80;
     my @trace  = $strand->resume;
-    say '-' x 80;
-    say "PREV : ", blessed $trace[-2];
-    say "CURR : ", blessed $trace[-1];
-    say "NEXT : ", defined($trace[-1]->kont) ? blessed $trace[-1]->kont : '~';
-    say '-' x 80;
-    say "  ->ping: ",$ping_chan->DUMP;
-    say "  ->pong: ",$pong_chan->DUMP;
-    say '-' x 80;
+    #say '-' x 80;
+    #say "PREV : ", blessed $trace[-2];
+    #say "CURR : ", blessed $trace[-1];
+    #say "NEXT : ", defined($trace[-1]->kont) ? blessed $trace[-1]->kont : '~';
+    #say '-' x 80;
+    #say "  ->ping: ",$ping_chan->DUMP;
+    #say "  ->pong: ",$pong_chan->DUMP;
+    #say '-' x 80;
     if ($trace[-1]->isa('Error')) {
         die $trace[-1]->error;
     }
 
     if ($trace[-1]->isa('Halt')) {
-        say "Halting ... ",$names{$strand},' @ ',$strand->steps;
+        #say "Halting ... ",$names{$strand},' @ ',$strand->steps;
         last unless @queue;
     } else {
-        say "Yielding ... ",$names{$strand},' @ ',$strand->steps;
+        #say "Yielding ... ",$names{$strand},' @ ',$strand->steps;
         push @queue => $strand;
     }
-    say '=' x 80;
-    my $x = <>;
+    #say '=' x 80;
+    #my $x = <>;
 }
 
 
