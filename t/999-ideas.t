@@ -93,6 +93,7 @@ class List :isa(Term) {}
 class Nil :isa(List) {
     method to_string { '()' }
     method is_nil { true }
+    method uncons { () }
 }
 
 class Cons :isa(List) {
@@ -397,6 +398,8 @@ class Apply::Call :isa(Kontinue) {
     }
 }
 
+## ...
+
 class Scope::Enter :isa(Kontinue) {
     field $env :param :reader;
     method kontinue ($ctx) {
@@ -443,23 +446,25 @@ class Cond :isa(Kontinue) {
     }
 }
 
+class Drop :isa(Kontinue) {
+    method kontinue ($ctx, $dropped) {
+        $self->DEBUG('-dropped' => $dropped) if ::DEBUG;
+        return $self->kont;
+    }
+}
+
+## ...
+
 class Return :isa(Kontinue) {
     field $value :param :reader;
 
     method kontinue ($ctx) {
         $self->DEBUG('value' => $value) if ::DEBUG;
-        return $self->kont;
+        return undef;
     }
 
     method to_string {
         return sprintf '%s[%s] > %s', __CLASS__, $value->to_string, $self->kont->to_string;
-    }
-}
-
-class Drop :isa(Kontinue) {
-    method kontinue ($ctx, $dropped) {
-        $self->DEBUG('-dropped' => $dropped) if ::DEBUG;
-        return $self->kont;
     }
 }
 
@@ -490,6 +495,25 @@ class Halt :isa(Kontinue) {
 
     method to_string {
         return sprintf '%s!! %s', __CLASS__, defined $result ? $result->to_string : '??';
+    }
+}
+
+class Channel::Read :isa(Kontinue) {
+    field $channel :reader :param;
+
+    method kontinue ($ctx) {
+        $self->DEBUG if ::DEBUG;
+        return undef;
+    }
+}
+
+class Channel::Write :isa(Kontinue) {
+    field $channel :reader :param;
+
+    method kontinue ($ctx, $value) {
+        $self->DEBUG('+value', $value) if ::DEBUG;
+        $channel->write($value);
+        return $ctx->return_value( Nil->new, $self->kont );
     }
 }
 
@@ -556,8 +580,11 @@ class Compiler {
         }
         return Scope::Enter->new( env => $env, kont => $kont );
     }
+
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++; }
 }
 
+## -----------------------------------------------------------------------------
 
 class Strand::Ref {
     field $strand :param :reader; # NOTE: weaken this
@@ -616,7 +643,51 @@ class Strand::Ref {
         )
     }
 
+    method read_from_channel (@args) {
+        my ($channel, $kont) = @args;
+        Channel::Read->new(
+            channel => ($channel // $strand->stdin),
+            kont    => ($kont    // $strand->next_kont),
+        )
+    }
+
+    method write_to_channel (@args) {
+        my ($channel, $kont) = @args;
+        Channel::Write->new(
+            channel => ($channel // $strand->stdout),
+            kont    => ($kont    // $strand->next_kont),
+        )
+    }
+
     ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+}
+
+## -----------------------------------------------------------------------------
+
+class Strand::Channel :isa(Term) {
+    field $name :param :reader = undef;
+
+    field @buffer;
+
+    method read {
+        return undef unless @buffer;
+        return shift @buffer;
+    }
+
+    method write ($t) {
+        push @buffer => $t;
+        return;
+    }
+
+    method to_string {
+        sprintf 'ch(%s)[%d]' => $name // '', scalar @buffer;
+    }
+}
+
+class Strand::Channel::TTY :isa(Strand::Channel) {
+    method read { return Str->new( raw => my $input = <> ) }
+    method write ($t) { print $t->to_string }
+    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
 }
 
 ## -----------------------------------------------------------------------------
@@ -625,15 +696,20 @@ class Strand {
     field $host  :param :reader;
     field $enter :param :reader;
 
-    field $ref   :reader;
-    field $steps :reader;
-    field @trace :reader;
-    field @envs  :reader;
+    field $stdin  :reader;
+    field $stdout :reader;
+    field $ref    :reader;
+    field $steps  :reader;
+    field @trace  :reader;
+    field @envs   :reader;
 
     ADJUST {
-        $ref   = Strand::Ref->new( strand => $self );
-        $steps = 0;
-
+        #$stdin  = Strand::Channel::TTY->new( name => 'STDIN' );
+        #$stdout = Strand::Channel::TTY->new( name => 'STDOUT');
+        $stdin = Strand::Channel->new;
+        $stdout = $stdin;
+        $ref    = Strand::Ref->new( strand => $self );
+        $steps  = 0;
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
 
@@ -686,20 +762,18 @@ class Strand {
                 push @trace => $kont->kont;
                 return $kont->kont->kontinue( $self->ref, $kont->value );
             }
+            when ('Channel::Read') {
+                my $ch = $kont->channel;
+                if (my $value = $ch->read) {
+                    return $self->ref->return_value( $value, $kont->kont );
+                } else {
+                    return Yield->new( kont => $kont );
+                }
+            }
             default {
                 return $kont->kontinue( $self->ref );
             }
         }
-    }
-}
-
-## -----------------------------------------------------------------------------
-
-class Cable {
-    field $host :param :reader;
-
-    method run (@strands) {
-
     }
 }
 
@@ -714,6 +788,8 @@ class Runtime {
         $root_env = $self->initialize_root_env;
         $parser   = Parser->new;
         $compiler = Compiler->new;
+
+        $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
 
     method parse ($src) { $parser->parse($src) }
@@ -783,6 +859,21 @@ class Runtime {
                     },
                     is_operative => true,
                 ),
+
+                'read' => Native->new(
+                    name => 'read',
+                    proc => sub ($ctx) { $ctx->read_from_channel },
+                    is_operative => true,
+                ),
+
+                'write' => Native->new(
+                    name => 'write',
+                    proc => sub ($ctx, $expr) {
+                        Eval::Expr->new( expr => $expr, kont => $ctx->write_to_channel )
+                    },
+                    is_operative => true,
+                ),
+
             }
         )
     }
@@ -791,15 +882,9 @@ class Runtime {
 my $host  = Runtime->new;
 my $exprs = $host->parse(q[
 
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(defun fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 2)) (fib (- n 1)))))
-
-(fact (fib 6))
+(write 10)
+(let x (read))
+x
 
 ]);
 
@@ -849,7 +934,15 @@ __DATA__
 (let x 6)
 
 
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
 
+(defun fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 2)) (fib (- n 1)))))
+
+(fact (fib 6))
 
 
 
