@@ -80,6 +80,8 @@ class Term {
     method to_string { ... }
     method is_nil { false }
 
+    method stringify { $self->to_string }
+
     ADJUST { $::ALLOCATIONS{TERMS}->{ blessed $self }++ }
 }
 
@@ -126,7 +128,8 @@ class Literal :isa(Term) {}
 
 class Str :isa(Literal) {
     field $raw :param :reader;
-    method to_string { $raw }
+    method to_string { sprintf '"%s"' => ($raw =~ s/\n/\\n/r) }
+    method stringify { $raw }
 }
 
 class Num :isa(Literal) {
@@ -210,9 +213,12 @@ class Kontinue {
     }
 
     method DEBUG (@args) {
-        say '-' x 120;
-        say sprintf '=> %-12s : %s' => __CLASS__, $self->kont // '!!';
-        say '-' x 120;
+        use Term::ReadKey ();
+        state $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
+
+        say '-' x $WIDTH;
+        say sprintf '=> %-12s : %s' => __CLASS__, substr($self->kont // '!!', 0, ($WIDTH - 20));
+        say '-' x $WIDTH;
         foreach my ($name, $arg) (@args) {
             say sprintf '%15s : %s' =>
                 $name,
@@ -498,21 +504,21 @@ class Halt :isa(Kontinue) {
     }
 }
 
-class Channel::Read :isa(Kontinue) {
+class Chan::Read :isa(Kontinue) {
     method kontinue ($ctx, $channel) {
-        $self->DEBUG if ::DEBUG;
-        if (my $value = $channel->read) {
+        $self->DEBUG('@channel', $channel) if ::DEBUG;
+        if (defined(my $value = $channel->read)) {
             return $ctx->return_value( $value, $self->kont );
         } else {
-            return Yield->new( kont => $self );
+            return Yield->new( kont => $ctx->return_value( $channel, $self ) );
         }
     }
 }
 
-class Channel::Write :isa(Kontinue) {
+class Chan::Write :isa(Kontinue) {
     method kontinue ($ctx, $args) {
-        $self->DEBUG('+args', $args) if ::DEBUG;
         my ($channel, $value) = $args->uncons;
+        $self->DEBUG('@channel', $channel, '+value', $value) if ::DEBUG;
         $channel->write( $value );
         return $ctx->return_value( Nil->new, $self->kont );
     }
@@ -606,6 +612,18 @@ class Strand::Ref {
         )
     }
 
+    method do_block ($exprs, $kont=undef) {
+        my $next = Scope::Leave->new( kont => $kont // $strand->next_kont );
+        foreach my $expr (reverse @$exprs) {
+            $next = Eval::Expr->new(
+                expr => $expr,
+                kont => ($next isa Scope::Leave)
+                        ? $next
+                        : Drop->new( kont => $next ));
+        }
+        return Scope::Enter->new( env => $self->current_env, kont => $next );
+    }
+
     method bind ($name, $expr, $kont=undef) {
         Eval::Expr->new(
             expr => $expr,
@@ -647,7 +665,7 @@ class Strand::Ref {
     method read_from_channel ($channel, $kont=undef) {
         Eval::Expr->new(
             expr => $channel,
-            kont => Channel::Read->new(
+            kont => Chan::Read->new(
                 kont => $kont // $strand->next_kont,
             )
         )
@@ -656,7 +674,7 @@ class Strand::Ref {
     method write_to_channel ($channel, $expr, $kont=undef) {
         Eval::Args->new(
             rest => Cons->of( $channel, $expr ),
-            kont => Channel::Write->new(
+            kont => Chan::Write->new(
                 kont => $kont // $strand->next_kont,
             )
         )
@@ -670,7 +688,12 @@ class Strand::Ref {
 class Channel :isa(Term) {
     field $name :param :reader = undef;
 
-    field @buffer;
+    field @buffer :reader;
+
+    our $ID_SEQ = 0;
+    ADJUST {
+        $name //= sprintf '%02d' => ++$ID_SEQ;
+    }
 
     method read {
         return undef unless @buffer;
@@ -683,7 +706,7 @@ class Channel :isa(Term) {
     }
 
     method to_string {
-        sprintf 'ch(%s)[%d]' => $name // '', scalar @buffer;
+        sprintf 'ch(%s)[%d]' => $name, scalar @buffer;
     }
 }
 
@@ -740,9 +763,10 @@ class Strand {
     }
 
     method resume {
+        return $self->execute( $enter ) unless @trace;
         return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
         return $self->execute( $self->ref->throw_error(
-            "You can only resume from a Yield, not ".$self->prev_kont,
+            "You can only resume from enter, or from a Yield, not ".$self->prev_kont,
         ));
     }
 
@@ -764,7 +788,7 @@ class Strand {
 
 class Channel::TTY :isa(Channel) {
     method read { return Str->new( raw => my $input = <> ) }
-    method write ($t) { print $t->to_string }
+    method write ($t) { print $t->stringify }
     method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
 }
 
@@ -779,8 +803,8 @@ class Runtime {
         $root_env = $self->initialize_root_env;
         $parser   = Parser->new;
         $compiler = Compiler->new;
-        $stdin    = Channel::TTY->new( name => 'STDIN' );
-        $stdout   = Channel::TTY->new( name => 'STDOUT');
+        $stdin    = Channel::TTY->new( name => 'stdin' );
+        $stdout   = Channel::TTY->new( name => 'stdout');
 
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
@@ -809,6 +833,8 @@ class Runtime {
                 '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
                 '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
 
+                '~' => Native->new( name => '~', proc => sub ($n, $m) { Str->new( raw => join '' => $n->stringify, $m->stringify ) }),
+
                 'lambda' => Native->new(
                     name => 'lambda',
                     proc => sub ($ctx, $p, $b) {
@@ -822,6 +848,12 @@ class Runtime {
                     proc => sub ($ctx, $condition, $if_true, $if_false) {
                         $ctx->conditional( $condition, $if_true, $if_false )
                     },
+                    is_operative => true,
+                ),
+
+                'do' => Native->new(
+                    name => 'do',
+                    proc => sub ($ctx, @exprs) { $ctx->do_block( \@exprs ) },
                     is_operative => true,
                 ),
 
@@ -853,6 +885,26 @@ class Runtime {
                     is_operative => true,
                 ),
 
+                ## -------------------------------------------------------------
+                ## Channels
+                ## -------------------------------------------------------------
+
+                'recv' => Native->new(
+                    name => 'recv',
+                    proc => sub ($ctx, $ch) { $ctx->read_from_channel( $ch ) },
+                    is_operative => true,
+                ),
+
+                'send' => Native->new(
+                    name => 'send',
+                    proc => sub ($ctx, $ch, $expr) { $ctx->write_to_channel( $ch, $expr ) },
+                    is_operative => true,
+                ),
+
+                ## -------------------------------------------------------------
+                ## TTY
+                ## -------------------------------------------------------------
+
                 '*stdin' => Native->new(
                     name => '*stdin',
                     proc => sub ($ctx) { $ctx->return_value( $ctx->strand->host->stdin ) },
@@ -865,15 +917,23 @@ class Runtime {
                     is_operative => true,
                 ),
 
-                'read' => Native->new(
-                    name => 'read',
-                    proc => sub ($ctx, $ch) { $ctx->read_from_channel( $ch ) },
+                '<>' => Native->new(
+                    name => '<>',
+                    proc => sub ($ctx) { $ctx->read_from_channel( $ctx->strand->host->stdin ) },
                     is_operative => true,
                 ),
-
-                'write' => Native->new(
-                    name => 'write',
-                    proc => sub ($ctx, $ch, $expr) { $ctx->write_to_channel( $ch, $expr ) },
+                'print' => Native->new(
+                    name => 'print',
+                    proc => sub ($ctx, $expr) {
+                        $ctx->write_to_channel( $ctx->strand->host->stdout, $expr )
+                    },
+                    is_operative => true,
+                ),
+                'say' => Native->new(
+                    name => 'say',
+                    proc => sub ($ctx, $expr) {
+                        $ctx->write_to_channel( $ctx->strand->host->stdout, Cons->of( Sym->new(ident => '~'), $expr, Str->new(raw => "\n") ) )
+                    },
                     is_operative => true,
                 ),
 
@@ -882,12 +942,113 @@ class Runtime {
     }
 }
 
-my $host  = Runtime->new;
+my $host = Runtime->new;
+
+my $actors = q[
+
+(defun PING ($in $out) (do
+    (say "> PING IS LOOKING FOR A MESSAGE ...")
+    (let count (recv $in))
+    (say (~ "> PING GOT MESSAGE FROM PONG! " count))
+    (if (> count 1)
+        (do
+            (say (~ "> PING IS RESPONDING w/ " (- count 1)))
+            (send $out (- count 1))
+            (say "< PING IS YIELDING")
+            (yield (PING $in $out)))
+        (do
+            (say "! PING IS DONE, SENDING 0 TO PONG!")
+            (send $out 0)
+            (say "> PING IS DONE!")
+        ))))
+
+(defun PONG ($in $out) (do
+    (say "> PONG IS LOOKING FOR A MESSAGE ...")
+    (let count (recv $in))
+    (say (~ "> PONG GOT MESSAGE FROM PING! " count))
+    (if (> count 1)
+        (do
+            (say (~ "> PONG IS RESPONDING w/ " (- count 1)))
+            (send $out (- count 1))
+            (say "< PONG IS YIELDING")
+            (yield (PONG $in $out)))
+        (do
+            (say "! PONG IS DONE, SENDING 0 TO PING!")
+            (send $out 0)
+            (say "> PONG IS DONE!")))))
+
+(PING $ping $pong)
+(PONG $pong $ping)
+
+];
+
+my $exprs = $host->parse($actors);
+
+my $ping_chan = Channel->new;
+my $pong_chan = Channel->new;
+
+my $env = $host->root_env->derive(
+    '$ping' => $ping_chan,
+    '$pong' => $pong_chan,
+);
+
+my ($Ping, $Pong, $ping, $pong, $trigger) = @$exprs;
+my $Pinger = $host->compile( $env, [ $Ping, $ping ] );
+my $Ponger = $host->compile( $env, [ $Pong, $pong ] );
+my $pinger = $host->initialize_strand( $Pinger );
+my $ponger = $host->initialize_strand( $Ponger );
+
+say "->pinger: $pinger ", $pinger;
+say "->ponger: $ponger ", $pinger ;
+
+my %names = ( $pinger => 'pinger', $ponger => 'ponger' );
+
+$ping_chan->write(Num->new(raw => 10));
+
+my @queue = ($pinger, $ponger);
+while (true) {
+    say '=' x 80;
+    my $strand = shift @queue;
+    say "Running ... ",$names{$strand};
+    say '-' x 80;
+    my @trace  = $strand->resume;
+    say '-' x 80;
+    say "PREV : ", blessed $trace[-2];
+    say "CURR : ", blessed $trace[-1];
+    say "NEXT : ", $trace[-1]->kont ? blessed $trace[-1]->kont : '~';
+    say '-' x 80;
+    say "->ping: ",join ', ' => $ping_chan->to_string, $ping_chan->buffer;
+    say "->pong: ",join ', ' => $pong_chan->to_string, $pong_chan->buffer;
+    say '-' x 80;
+    if ($trace[-1]->isa('Error')) {
+        die $trace[-1]->error;
+    }
+
+    if ($trace[-1]->isa('Halt')) {
+        say "Halting ... ",$names{$strand};
+        last unless @queue;
+    } else {
+        say "Yielding ... ",$names{$strand};
+        push @queue => $strand;
+    }
+    say '=' x 80;
+    my $x = <>;
+}
+
+
+__END__
+
 my $exprs = $host->parse(q[
 
-(let x (read (*stdin)))
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
 
-x
+(defun fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 2)) (fib (- n 1)))))
+
+(say (~ "FACT/FIB=" (fact (fib 6))))
 
 ]);
 
