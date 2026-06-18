@@ -76,7 +76,7 @@ class Parser {
 ## -----------------------------------------------------------------------------
 
 class Term {
-    use overload '""' => 'to_string';
+    use overload '""' => 'to_string', fallback => false;
     method to_string { ... }
     method is_nil { false }
 
@@ -121,7 +121,9 @@ class Cons :isa(List) {
         return @list;
     }
 
-    method to_string { sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons }
+    method to_string { sprintf '(%s)' => join ' ' => map {
+        blessed $_ ? $_->to_string : "WTF!($_)"
+    } $self->uncons }
 }
 
 class Literal :isa(Term) {}
@@ -201,7 +203,7 @@ class Env {
 ## -----------------------------------------------------------------------------
 
 class Kontinue {
-    use overload '""' => 'to_string';
+    use overload '""' => 'to_string', fallback => false;
 
     field $kont :param :reader = undef;
 
@@ -507,7 +509,8 @@ class Halt :isa(Kontinue) {
 class Chan::Read :isa(Kontinue) {
     method kontinue ($ctx, $channel) {
         $self->DEBUG('@channel', $channel) if ::DEBUG;
-        if (defined(my $value = $channel->read)) {
+        if ($channel->can_read) {
+            my $value = $channel->read;
             return $ctx->return_value( $value, $self->kont );
         } else {
             return Yield->new( kont => $ctx->return_value( $channel, $self ) );
@@ -675,7 +678,7 @@ class Strand::Ref {
         Eval::Args->new(
             rest => Cons->of( $channel, $expr ),
             kont => Chan::Write->new(
-                kont => $kont // $strand->next_kont,
+                kont => $kont // $strand->next_kont
             )
         )
     }
@@ -688,25 +691,37 @@ class Strand::Ref {
 class Channel :isa(Term) {
     field $name :param :reader = undef;
 
-    field @buffer :reader;
+    field @w_buffer :reader;
+    field @r_buffer  :reader;
 
     our $ID_SEQ = 0;
     ADJUST {
         $name //= sprintf '%02d' => ++$ID_SEQ;
+
+        $::ALLOCATIONS{MISC}->{ blessed $self }++
     }
 
-    method read {
-        return undef unless @buffer;
-        return shift @buffer;
-    }
+    method can_read { !! scalar @r_buffer }
 
-    method write ($t) {
-        push @buffer => $t;
-        return;
+    method read { shift @r_buffer }
+
+    method write (@terms) { push @w_buffer => @terms; return; }
+
+    method flush {
+        push @r_buffer => @w_buffer;
+        @w_buffer = ();
+        return $self->can_read;
     }
 
     method to_string {
-        sprintf 'ch(%s)[%d]' => $name, scalar @buffer;
+        sprintf 'ch<%s>:r[%d]:w[%d]' => $name, (scalar @r_buffer), (scalar @w_buffer);
+    }
+
+    method DUMP {
+        sprintf '%s {%s}<-{%s}' =>
+            $self->to_string,
+            (join ', ' => @r_buffer),
+            (join ', ' => @w_buffer);
     }
 }
 
@@ -773,6 +788,13 @@ class Strand {
     method step ($kont) {
         $steps++;
         given (blessed $kont) {
+            #say "STEP: ",$steps;
+            #say "ENV:";
+            #if ($self->current_scope) {
+            #    foreach my ($k, $v) ($self->current_env->DUMP) {
+            #        say sprintf '  > %-10s : %s ...', $k, substr(blessed $v ? $v->to_string : "WTF($v)", 0, 60);
+            #    }
+            #}
             when ('Return') {
                 push @trace => $kont->kont;
                 return $kont->kont->kontinue( $self->ref, $kont->value );
@@ -833,7 +855,7 @@ class Runtime {
                 '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
                 '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
 
-                '~' => Native->new( name => '~', proc => sub ($n, $m) { Str->new( raw => join '' => $n->stringify, $m->stringify ) }),
+                '~' => Native->new( name => '~', proc => sub ($n, $m) { Str->new( raw => $n->stringify.$m->stringify ) }),
 
                 'lambda' => Native->new(
                     name => 'lambda',
@@ -998,37 +1020,47 @@ my $Ponger = $host->compile( $env, [ $Pong, $pong ] );
 my $pinger = $host->initialize_strand( $Pinger );
 my $ponger = $host->initialize_strand( $Ponger );
 
-say "->pinger: $pinger ", $pinger;
-say "->ponger: $ponger ", $pinger ;
 
 my %names = ( $pinger => 'pinger', $ponger => 'ponger' );
 
 $ping_chan->write(Num->new(raw => 10));
 
-my @queue = ($pinger, $ponger);
+say "Starting channels ... ";
+say '-' x 80;
+say "  ->ping: ",$ping_chan->DUMP;
+say "  ->pong: ",$pong_chan->DUMP;
+say '=' x 80;
+
+my @channels = ($ping_chan, $pong_chan);
+my @queue    = ($pinger, $ponger);
 while (true) {
+    say "Flushing channels ... ";
+    $_->flush foreach @channels;
+    say '-' x 80;
+    say "  ->ping: ",$ping_chan->DUMP;
+    say "  ->pong: ",$pong_chan->DUMP;
     say '=' x 80;
     my $strand = shift @queue;
-    say "Running ... ",$names{$strand};
+    say "Running ... ",$names{$strand},' @ ',$strand->steps;
     say '-' x 80;
     my @trace  = $strand->resume;
     say '-' x 80;
     say "PREV : ", blessed $trace[-2];
     say "CURR : ", blessed $trace[-1];
-    say "NEXT : ", $trace[-1]->kont ? blessed $trace[-1]->kont : '~';
+    say "NEXT : ", defined($trace[-1]->kont) ? blessed $trace[-1]->kont : '~';
     say '-' x 80;
-    say "->ping: ",join ', ' => $ping_chan->to_string, $ping_chan->buffer;
-    say "->pong: ",join ', ' => $pong_chan->to_string, $pong_chan->buffer;
+    say "  ->ping: ",$ping_chan->DUMP;
+    say "  ->pong: ",$pong_chan->DUMP;
     say '-' x 80;
     if ($trace[-1]->isa('Error')) {
         die $trace[-1]->error;
     }
 
     if ($trace[-1]->isa('Halt')) {
-        say "Halting ... ",$names{$strand};
+        say "Halting ... ",$names{$strand},' @ ',$strand->steps;
         last unless @queue;
     } else {
-        say "Yielding ... ",$names{$strand};
+        say "Yielding ... ",$names{$strand},' @ ',$strand->steps;
         push @queue => $strand;
     }
     say '=' x 80;
