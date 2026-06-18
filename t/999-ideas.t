@@ -725,6 +725,14 @@ class Channel :isa(Term) {
     }
 }
 
+class Channel::TTY :isa(Channel) {
+    method can_read { true }
+    method read { return Str->new( raw => my $input = <> ) }
+    method write ($t) { print $t->stringify }
+    method flush { $self->can_read }
+    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
+}
+
 ## -----------------------------------------------------------------------------
 
 class Strand {
@@ -807,12 +815,6 @@ class Strand {
 }
 
 ## -----------------------------------------------------------------------------
-
-class Channel::TTY :isa(Channel) {
-    method read { return Str->new( raw => my $input = <> ) }
-    method write ($t) { print $t->stringify }
-    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
-}
 
 class Runtime {
     field $root_env :reader;
