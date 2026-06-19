@@ -65,7 +65,10 @@ class Parser {
                         : Nil->new;
                 }
                 default {
-                    push $stack[-1]->@*, Sym->new( ident => $token );
+                    push $stack[-1]->@*,
+                        $token =~ /^\:/
+                            ? Tag->new( ident => $token )
+                            : Sym->new( ident => $token );
                 }
             }
         }
@@ -86,6 +89,11 @@ class Term {
 }
 
 class Sym :isa(Term) {
+    field $ident :param :reader;
+    method to_string { $ident }
+}
+
+class Tag :isa(Term) {
     field $ident :param :reader;
     method to_string { $ident }
 }
@@ -422,7 +430,8 @@ class Scope::Enter :isa(Kontinue) {
 }
 
 class Scope::Leave :isa(Kontinue) {
-    method kontinue ($ctx, $result) {
+    method kontinue ($ctx, $result=undef) {
+        $result = Nil->new;
         $self->DEBUG('+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
         return $ctx->return_value( $result, $self->kont );
@@ -506,9 +515,27 @@ class Halt :isa(Kontinue) {
     }
 }
 
+class Spawn :isa(Kontinue) {
+    field $expr :param :reader;
+
+    method kontinue ($ctx) {
+        $self->DEBUG if ::DEBUG;
+        my $kont = $ctx->host->compile( $ctx->current_env, $expr );
+        my $pid  = $ctx->host->spawn( $kont );
+        return $ctx->return_value( $pid, $self->kont );
+    }
+}
+
 class Chan::Read :isa(Kontinue) {
-    method kontinue ($ctx, $channel) {
-        $self->DEBUG('@channel', $channel) if ::DEBUG;
+    method kontinue ($ctx, $channel=undef) {
+        $channel = $ctx->strand->pid unless defined $channel;
+
+        if ($channel isa PID) {
+            $self->DEBUG('@PID', $channel) if ::DEBUG;
+            $channel = $channel->channel;
+        } else {
+            $self->DEBUG('@channel', $channel) if ::DEBUG;
+        }
         if ($channel->can_read) {
             my $value = $channel->read;
             return $ctx->return_value( $value, $self->kont );
@@ -520,8 +547,21 @@ class Chan::Read :isa(Kontinue) {
 
 class Chan::Write :isa(Kontinue) {
     method kontinue ($ctx, $args) {
-        my ($channel, $value) = $args->uncons;
-        $self->DEBUG('@channel', $channel, '+value', $value) if ::DEBUG;
+        my ($channel, $value);
+        if ($args->tail->is_nil) {
+            $channel = $ctx->strand->pid;
+            $value   = $args->head;
+        } else {
+            ($channel, $value) = $args->uncons;
+        }
+
+        if ($channel isa PID) {
+            $self->DEBUG('@PID', $channel, '+value', $value) if ::DEBUG;
+            $channel = $channel->channel;
+        } else {
+            $self->DEBUG('@channel', $channel, '+value', $value) if ::DEBUG;
+        }
+
         $channel->write( $value );
         return $ctx->return_value( Nil->new, $self->kont );
     }
@@ -597,7 +637,7 @@ class Compiler {
 ## -----------------------------------------------------------------------------
 
 class Strand::Ref {
-    field $strand :param :reader; # NOTE: weaken this
+    field $strand :param :reader; # needs weakening
 
     method current_env     { $strand->current_env }
     method lookup ($s)     { $strand->lookup( $s ) }
@@ -665,8 +705,16 @@ class Strand::Ref {
         )
     }
 
-    method read_from_channel ($channel, $kont=undef) {
-        Eval::Expr->new(
+    method read_from_channel (@args) {
+        return Chan::Read->new( kont => $strand->next_kont )
+            if scalar @args == 0;
+
+        return Chan::Read->new( kont => $args[0] )
+            if $args[0] isa Kontinue;
+
+        my ($channel, $kont) = @args;
+
+        return Eval::Expr->new(
             expr => $channel,
             kont => Chan::Read->new(
                 kont => $kont // $strand->next_kont,
@@ -674,13 +722,41 @@ class Strand::Ref {
         )
     }
 
-    method write_to_channel ($channel, $expr, $kont=undef) {
-        Eval::Args->new(
-            rest => Cons->of( $channel, $expr ),
-            kont => Chan::Write->new(
-                kont => $kont // $strand->next_kont
+    method write_to_channel (@args) {
+        if (scalar @args == 1) {
+            my ($expr) = @args;
+            return Eval::Args->new(
+                rest => Cons->of( $expr ),
+                kont => Chan::Write->new( kont => $strand->next_kont )
             )
-        )
+        }
+        elsif (scalar @args == 3) {
+            my ($channel, $expr, $kont) = @args;
+            return Eval::Args->new(
+                rest => Cons->of( $channel, $expr ),
+                kont => Chan::Write->new( kont => $kont )
+            )
+        }
+        elsif (scalar @args == 2) {
+            my ($expr, $kont);
+            if ($args[-1] isa Kontinue) {
+                $expr = Cons->of( $args[0] );
+                $kont = $args[1];
+            } else {
+                $expr = Cons->of( @args );
+            }
+            return Eval::Args->new(
+                rest => $expr,
+                kont => Chan::Write->new( kont => $kont // $strand->next_kont )
+            )
+        }
+        else {
+            die "WTF too many args dude!"
+        }
+    }
+
+    method spawn_pid ($expr, $kont=undef) {
+        Spawn->new( expr => $expr, kont => $kont // $strand->next_kont )
     }
 
     ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
@@ -689,9 +765,10 @@ class Strand::Ref {
 ## -----------------------------------------------------------------------------
 
 class Strand {
-    field $host  :param :reader;
+    field $host  :param :reader; # cycle via PID (host <-> pid <-> strand)
     field $enter :param :reader;
 
+    field $pid    :reader; # needs weakening
     field $ref    :reader;
     field $steps  :reader;
     field @trace  :reader;
@@ -702,6 +779,11 @@ class Strand {
         $steps  = 0;
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
+
+    ## -------------------------------------------------------------------------
+    ## GROSS!!
+
+    method assign_pid ($p) { $pid = $p }
 
     ## -------------------------------------------------------------------------
 
@@ -820,8 +902,17 @@ class Channel::TTY :isa(Channel) {
 ## -----------------------------------------------------------------------------
 
 class PID :isa(Term) {
+    field $id      :param :reader;
     field $channel :param :reader;
     field $strand  :param :reader;
+    field $alias   :param :reader = undef;
+
+    ADJUST { $strand->assign_pid( $self ) }
+
+    method to_string {
+        sprintf 'PID<%04d>%s' => $id,
+            (defined $alias ? ('['.$alias->to_string.']') : '')
+    }
 }
 
 ## -----------------------------------------------------------------------------
@@ -832,6 +923,9 @@ class Runtime {
     field $parser   :reader;
     field $stdin    :reader;
     field $stdout   :reader;
+
+    field @pids;
+    field $PID_SEQ = 0;
 
     ADJUST {
         $root_env = $self->initialize_root_env;
@@ -854,6 +948,16 @@ class Runtime {
     method initialize_strand ($kont) { Strand->new( host => $self, enter => $kont ) }
 
     method initialize_channel { Channel->new }
+
+    method spawn ($kont) {
+        my $pid = PID->new(
+            id      => ++$PID_SEQ,
+            channel => $self->initialize_channel,
+            strand  => $self->initialize_strand($kont),
+        );
+        push @pids => $pid;
+        return $pid;
+    }
 
     ## -------------------------------------------------------------------------
 
@@ -929,15 +1033,21 @@ class Runtime {
                 ## Channels
                 ## -------------------------------------------------------------
 
+                'spawn' => Native->new(
+                    name => 'spawn',
+                    proc => sub ($ctx, $expr) { $ctx->spawn_pid( $expr ) },
+                    is_operative => true,
+                ),
+
                 'recv' => Native->new(
                     name => 'recv',
-                    proc => sub ($ctx, $ch) { $ctx->read_from_channel( $ch ) },
+                    proc => sub ($ctx, @args) { $ctx->read_from_channel( @args ) },
                     is_operative => true,
                 ),
 
                 'send' => Native->new(
                     name => 'send',
-                    proc => sub ($ctx, $ch, $expr) { $ctx->write_to_channel( $ch, $expr ) },
+                    proc => sub ($ctx, @args) { $ctx->write_to_channel( @args ) },
                     is_operative => true,
                 ),
 
@@ -980,128 +1090,54 @@ class Runtime {
             }
         )
     }
+
+    method run ($kont) {
+        my $main = $self->spawn( $kont );
+
+        while (true) {
+            my $pid = shift @pids;
+            say "Flushing channel for ",$pid->to_string,' @ ',$pid->strand->steps;
+            say '-' x 80;
+            $pid->channel->flush if $pid->channel->has_pending;
+            say "BEFORE: ",$pid->channel->DUMP;
+            say '-' x 80;
+            say "Running ... ",$pid->to_string,' @ ',$pid->strand->steps;
+            say '-' x 80;
+            my @trace  = $pid->strand->resume;
+            say '-' x 80;
+            say "AFTER: ",$pid->channel->DUMP;
+            say '-' x 80;
+
+            if ($trace[-1]->isa('Error')) {
+                say "Error ... ",$pid->to_string,' @ ',$pid->strand->steps;
+                warn $trace[-1]->error, "\n";
+                last unless @pids;
+                next;
+            }
+
+            if ($trace[-1]->isa('Halt')) {
+                say "Halting ... ",$pid->to_string,' @ ',$pid->strand->steps;
+                last unless @pids;
+            } else {
+                say "Yielding ... ",$pid->to_string,' @ ',$pid->strand->steps;
+                push @pids => $pid;
+            }
+            say '=' x 80;
+            #my $x = <>;
+        }
+
+        return $main->strand->trace;
+    }
 }
 
 
 my $host = Runtime->new;
 
-my $actors = q[
-
-(defun PING ($in $out) (do
-    (say "> PING IS LOOKING FOR A MESSAGE ...")
-    (let count (recv $in))
-    (say (~ "> PING GOT MESSAGE FROM PONG! " count))
-    (if (> count 1)
-        (do
-            (say (~ "> PING IS RESPONDING w/ " (- count 1)))
-            (send $out (- count 1))
-            (say "< PING IS YIELDING")
-            (yield (PING $in $out)))
-        (do
-            (say "! PING IS DONE, SENDING 0 TO PONG!")
-            (send $out 0)
-            (say "> PING IS DONE!")))))
-
-(defun PONG ($in $out) (do
-    (say "> PONG IS LOOKING FOR A MESSAGE ...")
-    (let count (recv $in))
-    (say (~ "> PONG GOT MESSAGE FROM PING! " count))
-    (if (> count 1)
-        (do
-            (say (~ "> PONG IS RESPONDING w/ " (- count 1)))
-            (send $out (- count 1))
-            (say "< PONG IS YIELDING")
-            (yield (PONG $in $out)))
-        (do
-            (say "! PONG IS DONE, SENDING 0 TO PING!")
-            (send $out 0)
-            (say "> PONG IS DONE!")))))
-
-(PING $ping $pong)
-(PONG $pong $ping)
-
-];
-
-my $exprs = $host->parse($actors);
-
-my $ping_chan = $host->initialize_channel;
-my $pong_chan = $host->initialize_channel;
-
-my $env = $host->root_env->derive(
-    '$ping' => $ping_chan,
-    '$pong' => $pong_chan,
-);
-
-my ($Ping, $Pong, $ping, $pong, $trigger) = @$exprs;
-my $Pinger = $host->compile( $env, [ $Ping, $ping ] );
-my $Ponger = $host->compile( $env, [ $Pong, $pong ] );
-my $pinger = $host->initialize_strand( $Pinger );
-my $ponger = $host->initialize_strand( $Ponger );
-
-my %names = ( $pinger => 'pinger', $ponger => 'ponger' );
-
-$ping_chan->write(Num->new(raw => 10));
-
-say "Starting channels ... ";
-say '-' x 80;
-say "  ->ping: ",$ping_chan->DUMP;
-say "  ->pong: ",$pong_chan->DUMP;
-say '=' x 80;
-
-my @channels = ($ping_chan, $pong_chan);
-my @queue    = ($pinger, $ponger);
-while (true) {
-    #say "Flushing channels ... ";
-    foreach my $ch (@channels) {
-        if ($ch->has_pending) {
-            $ch->flush;
-        }
-    }
-    #say '-' x 80;
-    #say "  ->ping: ",$ping_chan->DUMP;
-    #say "  ->pong: ",$pong_chan->DUMP;
-    #say '=' x 80;
-    my $strand = shift @queue;
-    say "Running ... ",$names{$strand},' @ ',$strand->steps;
-    #say '-' x 80;
-    my @trace  = $strand->resume;
-    #say '-' x 80;
-    #say "PREV : ", blessed $trace[-2];
-    #say "CURR : ", blessed $trace[-1];
-    #say "NEXT : ", defined($trace[-1]->kont) ? blessed $trace[-1]->kont : '~';
-    #say '-' x 80;
-    #say "  ->ping: ",$ping_chan->DUMP;
-    #say "  ->pong: ",$pong_chan->DUMP;
-    #say '-' x 80;
-    if ($trace[-1]->isa('Error')) {
-        die $trace[-1]->error;
-    }
-
-    if ($trace[-1]->isa('Halt')) {
-        #say "Halting ... ",$names{$strand},' @ ',$strand->steps;
-        last unless @queue;
-    } else {
-        #say "Yielding ... ",$names{$strand},' @ ',$strand->steps;
-        push @queue => $strand;
-    }
-    #say '=' x 80;
-    #my $x = <>;
-}
-
-
-__END__
-
 my $exprs = $host->parse(q[
 
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(defun fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 2)) (fib (- n 1)))))
-
-(say (~ "FACT/FIB=" (fact (fib 6))))
+(send 10)
+(send 20)
+(say (+ (recv) (recv)))
 
 ]);
 
@@ -1117,7 +1153,7 @@ foreach my ($name, $f) ($compiled->env->DUMP) {
 say '    + (main)';
 say '       ', $compiled;
 
-my @trace = $host->initialize_strand( $compiled )->run;
+my @trace = $host->run( $compiled );
 
 say "STATS:";
 say "    STEPS : ", scalar @trace;
@@ -1148,7 +1184,6 @@ foreach my $type (sort { $ALLOCATIONS{MISC}->{$b} <=> $ALLOCATIONS{MISC}->{$a} }
 
 
 __DATA__
-(let x 6)
 
 
 (defun fact (n)
@@ -1159,8 +1194,7 @@ __DATA__
     (if (< n 2) n
         (+ (fib (- n 2)) (fib (- n 1)))))
 
-(fact (fib 6))
-
+(say (~ "FACT/FIB=" (fact (fib 6))))
 
 
 
