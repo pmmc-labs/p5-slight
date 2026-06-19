@@ -12,7 +12,7 @@ use constant TRACE => $ENV{TRACE} // 0;
 ## -----------------------------------------------------------------------------
 
 use constant OPTIMIZE_CALLS  => true;
-use constant PRECOMPILE_DEFS => true;
+use constant PRECOMPILE_DEFS => false;
 
 ## -----------------------------------------------------------------------------
 
@@ -222,7 +222,7 @@ class Kontinue {
         return sprintf '%s > %s', __CLASS__, $kont->to_string;
     }
 
-    method DEBUG (@args) {
+    method DEBUG ($ctx, @args) {
         use Term::ReadKey ();
         state $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
 
@@ -245,7 +245,7 @@ class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG(expr => $expr) if ::DEBUG;
+        $self->DEBUG($ctx, expr => $expr) if ::DEBUG;
 
         given (blessed $expr) {
             when ('Cons') {
@@ -292,7 +292,7 @@ class Apply::Expr :isa(Kontinue) {
     field $args :param :reader;
 
     method kontinue ($ctx, $call) {
-        $self->DEBUG(args => $args, '+call' => $call) if ::DEBUG;
+        $self->DEBUG($ctx, args => $args, '+call' => $call) if ::DEBUG;
 
         my $next = Apply::Call->new( call => $call, kont => $self->kont );
 
@@ -323,7 +323,7 @@ class Eval::Args :isa(Kontinue) {
     field $done :param :reader = Nil->new;
 
     method kontinue ($ctx, $value=undef) {
-        $self->DEBUG(rest => $rest, done => $done, '+value' => $value // '?') if ::DEBUG;
+        $self->DEBUG($ctx, rest => $rest, done => $done, '+value' => $value // '?') if ::DEBUG;
 
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
@@ -384,8 +384,9 @@ class Apply::Call :isa(Kontinue) {
         return $call->env->derive( %local );
     }
 
-    method kontinue ($ctx, $args) {
-        $self->DEBUG(call => $call, '+args' => $args) if ::DEBUG;
+    method kontinue ($ctx, $args=undef) {
+        $args //= Nil->new;
+        $self->DEBUG($ctx, call => $call, '+args' => $args) if ::DEBUG;
 
         given (blessed $call) {
             when ('Native') {
@@ -419,7 +420,7 @@ class Apply::Call :isa(Kontinue) {
 class Scope::Enter :isa(Kontinue) {
     field $env :param :reader;
     method kontinue ($ctx) {
-        $self->DEBUG if ::DEBUG;
+        $self->DEBUG($ctx) if ::DEBUG;
         $ctx->strand->enter_scope( $env );
         return $self->kont;
     }
@@ -432,7 +433,7 @@ class Scope::Enter :isa(Kontinue) {
 class Scope::Leave :isa(Kontinue) {
     method kontinue ($ctx, $result=undef) {
         $result = Nil->new;
-        $self->DEBUG('+result' => $result) if ::DEBUG;
+        $self->DEBUG($ctx, '+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
         return $ctx->strand->return_value( $result, $self->kont );
     }
@@ -441,7 +442,7 @@ class Scope::Leave :isa(Kontinue) {
 class Bind :isa(Kontinue) {
     field $name :param :reader;
     method kontinue ($ctx, $value) {
-        $self->DEBUG('name' => $name, '+value' => $value) if ::DEBUG;
+        $self->DEBUG($ctx, 'name' => $name, '+value' => $value) if ::DEBUG;
         $ctx->strand->define( $name, $value );
         return $ctx->strand->return_value( Nil->new, $self->kont );
     }
@@ -465,7 +466,7 @@ class Cond :isa(Kontinue) {
 
 class Drop :isa(Kontinue) {
     method kontinue ($ctx, $dropped) {
-        $self->DEBUG('-dropped' => $dropped) if ::DEBUG;
+        $self->DEBUG($ctx, '-dropped' => $dropped) if ::DEBUG;
         return $self->kont;
     }
 }
@@ -476,7 +477,7 @@ class Return :isa(Kontinue) {
     field $value :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG('value' => $value) if ::DEBUG;
+        $self->DEBUG($ctx, 'value' => $value) if ::DEBUG;
         return undef;
     }
 
@@ -487,7 +488,7 @@ class Return :isa(Kontinue) {
 
 class Yield :isa(Kontinue) {
     method kontinue ($ctx) {
-        $self->DEBUG if ::DEBUG;
+        $self->DEBUG($ctx) if ::DEBUG;
         return undef;
     }
 }
@@ -496,7 +497,7 @@ class Error :isa(Kontinue) {
     field $error :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG('error' => $error) if ::DEBUG;
+        $self->DEBUG($ctx, 'error' => $error) if ::DEBUG;
         return undef;
     }
 }
@@ -505,7 +506,7 @@ class Halt :isa(Kontinue) {
     field $result :reader;
 
     method kontinue ($ctx, $r) {
-        $self->DEBUG('+result' => $r) if ::DEBUG;
+        $self->DEBUG($ctx, '+result' => $r) if ::DEBUG;
         $result = $r;
         return undef;
     }
@@ -519,8 +520,8 @@ class Spawn :isa(Kontinue) {
     field $expr :param :reader;
 
     method kontinue ($ctx) {
-        $self->DEBUG if ::DEBUG;
-        my $kont = $ctx->strand->host->compile( $ctx->current_env, $expr );
+        $self->DEBUG($ctx) if ::DEBUG;
+        my $kont = $ctx->strand->host->compile( $ctx->strand->current_env, [ $expr ] );
         my $pid  = $ctx->strand->host->spawn( $kont );
         return $ctx->strand->return_value( $pid, $self->kont );
     }
@@ -531,10 +532,10 @@ class Chan::Read :isa(Kontinue) {
         $channel = $ctx unless defined $channel;
 
         if ($channel isa PID) {
-            $self->DEBUG('@PID', $channel) if ::DEBUG;
+            $self->DEBUG($ctx, '@PID', $channel) if ::DEBUG;
             $channel = $channel->channel;
         } else {
-            $self->DEBUG('@channel', $channel) if ::DEBUG;
+            $self->DEBUG($ctx, '@channel', $channel) if ::DEBUG;
         }
         if ($channel->can_read) {
             my $value = $channel->read;
@@ -556,10 +557,10 @@ class Chan::Write :isa(Kontinue) {
         }
 
         if ($channel isa PID) {
-            $self->DEBUG('@PID', $channel, '+value', $value) if ::DEBUG;
+            $self->DEBUG($ctx, '@PID', $channel, '+value', $value) if ::DEBUG;
             $channel = $channel->channel;
         } else {
-            $self->DEBUG('@channel', $channel, '+value', $value) if ::DEBUG;
+            $self->DEBUG($ctx, '@channel', $channel, '+value', $value) if ::DEBUG;
         }
 
         $channel->write( $value );
@@ -846,13 +847,14 @@ class PID :isa(Term) {
     method DUMP {
         sprintf 'PID<%04d> %s' => $id, $channel->to_string;
     }
-
-    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
 }
 
 ## -----------------------------------------------------------------------------
 
 class Channel :isa(Term) {
+    # FIXME: turn this into something else
+    # not just a name, and maybe associate
+    # it with PID id somehow???
     field $name :param :reader = undef;
 
     field @w_buffer :reader;
@@ -861,8 +863,6 @@ class Channel :isa(Term) {
     our $ID_SEQ = 0;
     ADJUST {
         $name //= sprintf '%02d' => ++$ID_SEQ;
-
-        $::ALLOCATIONS{MISC}->{ blessed $self }++
     }
 
     method can_read    { !! scalar @r_buffer }
@@ -928,9 +928,11 @@ class Runtime {
 
     ## -------------------------------------------------------------------------
 
+    our $ID_SEQ = 0;
+
     method spawn ($kont) {
         my $strand = Strand->new(
-            pid   => (scalar @pids),
+            pid   => $ID_SEQ++,
             host  => $self,
             enter => $kont,
         );
@@ -956,7 +958,14 @@ class Runtime {
                 '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
                 '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
 
-                '~' => Native->new( name => '~', proc => sub ($n, $m) { Str->new( raw => $n->stringify.$m->stringify ) }),
+                '~'  => Native->new( name => '~',  proc => sub ($n, $m) { Str->new( raw => $n->stringify.$m->stringify ) }),
+
+                'eq' => Native->new( name => 'eq', proc => sub ($n, $m) { $n->raw eq $m->raw ? Bool->TRUE : Bool->FALSE }),
+                'ne' => Native->new( name => 'ne', proc => sub ($n, $m) { $n->raw ne $m->raw ? Bool->TRUE : Bool->FALSE }),
+                'le' => Native->new( name => 'le', proc => sub ($n, $m) { $n->raw le $m->raw ? Bool->TRUE : Bool->FALSE }),
+                'ge' => Native->new( name => 'ge', proc => sub ($n, $m) { $n->raw ge $m->raw ? Bool->TRUE : Bool->FALSE }),
+                'gt' => Native->new( name => 'gt', proc => sub ($n, $m) { $n->raw gt $m->raw ? Bool->TRUE : Bool->FALSE }),
+                'lt' => Native->new( name => 'lt', proc => sub ($n, $m) { $n->raw lt $m->raw ? Bool->TRUE : Bool->FALSE }),
 
                 'lambda' => Native->new(
                     name => 'lambda',
@@ -1017,6 +1026,12 @@ class Runtime {
                 ## -------------------------------------------------------------
                 ## Channels
                 ## -------------------------------------------------------------
+
+                '$$' => Native->new(
+                    name => '$$',
+                    proc => sub ($ctx) { $ctx->strand->return_value( $ctx ) },
+                    is_operative => true,
+                ),
 
                 'spawn' => Native->new(
                     name => 'spawn',
@@ -1120,8 +1135,18 @@ my $host = Runtime->new;
 
 my $exprs = $host->parse(q[
 
-(send 10)
-(say (recv))
+(defun echo ()
+    (do
+        (let msg (recv))
+        (say (~ "GOT: " msg))
+        (if (eq msg ":q") ()
+            (yield (echo)))))
+
+(let $echo (spawn (echo)))
+
+(send $echo "Hello World")
+(send $echo "Goodbye World")
+(send $echo ":q")
 
 ]);
 
