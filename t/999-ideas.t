@@ -11,7 +11,7 @@ use constant TRACE => $ENV{TRACE} // 0;
 
 ## -----------------------------------------------------------------------------
 
-use constant OPTIMIZE_CALLS  => true;
+use constant OPTIMIZE_CALLS  => false;
 use constant PRECOMPILE_DEFS => false;
 
 ## -----------------------------------------------------------------------------
@@ -31,51 +31,7 @@ our %STATS = (
 );
 
 ## -----------------------------------------------------------------------------
-
-class Parser {
-    field @stack = (+[]);
-
-    method tokenizer ($source) {
-        $source =~ s/\;.*\n//g if $source =~ /\;/;
-        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
-    }
-
-    method parse ($source) {
-        @stack = (+[]);
-        my @tokens = $self->tokenizer($source);
-        while (@tokens) {
-            my $token = shift @tokens;
-            if ($token =~ /^\'[^\(]/) {
-                $token =~ s/^\'//;
-                push @stack => +[ Sym->new(ident => 'quote' ) ];
-                unshift @tokens => ')';
-            }
-            given ($token) {
-                when (/^\"/)   { push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) ); }
-                when (/^\d+$/) { push $stack[-1]->@*, Num->new( raw => $token+0 ); }
-                when ('nil')   { push $stack[-1]->@*, Nil->new; }
-                when ('true')  { push $stack[-1]->@*, Bool->TRUE; }
-                when ('false') { push $stack[-1]->@*, Bool->FALSE; }
-                when ('\'(')   { push @stack => +[ Sym->new(ident => 'quote' ) ]; }
-                when ('(')     { push @stack => +[]; }
-                when (')')     {
-                    my $list = pop @stack;
-                    push $stack[-1]->@*, (scalar $list->@* > 0)
-                        ? Cons->of( $list->@* )
-                        : Nil->new;
-                }
-                default {
-                    push $stack[-1]->@*,
-                        $token =~ /^\:/
-                            ? Tag->new( ident => $token )
-                            : Sym->new( ident => $token );
-                }
-            }
-        }
-        return $stack[-1];
-    }
-}
-
+## Terms
 ## -----------------------------------------------------------------------------
 
 class Term {
@@ -129,9 +85,7 @@ class Cons :isa(List) {
         return @list;
     }
 
-    method to_string { sprintf '(%s)' => join ' ' => map {
-        blessed $_ ? $_->to_string : "WTF!($_)"
-    } $self->uncons }
+    method to_string { sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons }
 }
 
 class Literal :isa(Term) {}
@@ -177,7 +131,7 @@ class Native :isa(Callable) {
     field $name :param :reader;
     field $proc :param :reader;
 
-    method has_name { defined $name }
+    ADJUST { $name = Sym->new(ident => $name) }
 
     field $is_operative :param :reader = false;
     method is_applicative { !$is_operative }
@@ -185,9 +139,60 @@ class Native :isa(Callable) {
     method to_string { sprintf '#<%s>' => $name }
 }
 
-## -----------------------------------------------------------------------------
+class PID :isa(Term) {
+    field $id      :param :reader;
+    field $channel :param :reader;
+    field $strand  :param :reader;
 
-class Env {
+    method to_string {
+        sprintf 'PID<%04d>' => $id;
+    }
+
+    method DUMP {
+        sprintf 'PID<%04d> %s' => $id, $channel->to_string;
+    }
+}
+
+class Channel :isa(Term) {
+    # FIXME: turn this into something else
+    # not just a name, and maybe associate
+    # it with PID id somehow???
+    field $name :param :reader = undef;
+
+    field @w_buffer :reader;
+    field @r_buffer  :reader;
+
+    our $ID_SEQ = 0;
+    ADJUST {
+        $name //= sprintf '%02d' => ++$ID_SEQ;
+    }
+
+    method can_read    { !! scalar @r_buffer }
+    method has_pending { !! scalar @w_buffer }
+
+    method read { shift @r_buffer }
+
+    method write (@terms) { push @w_buffer => @terms; return; }
+
+    method flush {
+        push @r_buffer => @w_buffer;
+        @w_buffer = ();
+        return $self->can_read;
+    }
+
+    method to_string {
+        sprintf 'ch<%s>:r[%d]:w[%d]' => $name, (scalar @r_buffer), (scalar @w_buffer);
+    }
+
+    method DUMP {
+        sprintf '%s {%s}<-{%s}' =>
+            $self->to_string,
+            (join ', ' => @r_buffer),
+            (join ', ' => @w_buffer);
+    }
+}
+
+class Env :isa(Term) {
     field $parent   :param :reader = undef;
     field $bindings :param :reader = +{};
 
@@ -205,9 +210,13 @@ class Env {
         return $parent->DUMP, %$bindings;
     }
 
-    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
+    method to_string {
+        sprintf 'ENV<%s>' => join '; ' => sort { $a cmp $b } keys $bindings->%*;
+    }
 }
 
+## -----------------------------------------------------------------------------
+## Kontinues
 ## -----------------------------------------------------------------------------
 
 class Kontinue {
@@ -239,8 +248,6 @@ class Kontinue {
     ADJUST { $::ALLOCATIONS{KONTS}->{ blessed $self }++ }
 }
 
-## -----------------------------------------------------------------------------
-
 class Eval::Expr :isa(Kontinue) {
     field $expr :param :reader;
 
@@ -258,7 +265,7 @@ class Eval::Expr :isa(Kontinue) {
                     }
                     elsif ($expr->head isa Sym) {
                         my $call = $ctx->strand->lookup( $expr->head );
-                        return $ctx->strand->throw_error("Unable to find ".$expr->head." in Env", $self)
+                        return $ctx->strand->throw_error("Unable to find ".$expr->head->to_string." in Env", $self)
                             if not defined $call;
                         $head = $next->kontinue( $ctx, $call );
                     }
@@ -273,7 +280,7 @@ class Eval::Expr :isa(Kontinue) {
             }
             when ('Sym') {
                 my $value = $ctx->strand->lookup($expr);
-                return $ctx->strand->throw_error("Unable to find ${expr} in Env", $self)
+                return $ctx->strand->throw_error("Unable to find ".$expr->to_string." in Env", $self)
                     if not defined $value;
                 return $ctx->strand->return_value($value, $self->kont);
             }
@@ -367,17 +374,17 @@ class Apply::Call :isa(Kontinue) {
         my $params = $call->params;
         if ($args isa List) {
             until ($params->is_nil) {
-                return $ctx->strand->throw_error("Arity Mismatch - missing:${params}", $self)
+                return $ctx->strand->throw_error("Arity Mismatch - missing:".$params->to_string, $self)
                     if $args->is_nil;
                 $local{ $params->head->ident } = $args->head;
                 $params = $params->tail;
                 $args   = $args->tail;
             }
-            return $ctx->strand->throw_error("Arity Mismatch - additional:${args}", $self)
+            return $ctx->strand->throw_error("Arity Mismatch - additional:".$args->to_string, $self)
                 unless $args->is_nil;
         } else {
-            return $ctx->strand->throw_error("Arity Mismatch - additional:${args}", $self) if $params->is_nil;
-            return $ctx->strand->throw_error("Arity Mismatch - missing:${params}",  $self) unless $params->tail->is_nil;
+            return $ctx->strand->throw_error("Arity Mismatch - additional:".$args->to_string, $self) if $params->is_nil;
+            return $ctx->strand->throw_error("Arity Mismatch - missing:".$params->to_string,  $self) unless $params->tail->is_nil;
             $local{ $params->head->ident } = $args;
         }
 
@@ -426,7 +433,7 @@ class Scope::Enter :isa(Kontinue) {
     }
 
     method to_string {
-        return sprintf '%s[%s] > %s', __CLASS__, ($env =~ /(0x.*)\)$/), $self->kont->to_string;
+        return sprintf '%s[%s] > %s', __CLASS__, $env->to_string, $self->kont->to_string;
     }
 }
 
@@ -569,6 +576,64 @@ class Chan::Write :isa(Kontinue) {
 }
 
 ## -----------------------------------------------------------------------------
+## Parser
+## -----------------------------------------------------------------------------
+## TODO:
+## - fix number handling to parse decimals
+## -----------------------------------------------------------------------------
+
+class Parser {
+    field @stack = (+[]);
+
+    method tokenizer ($source) {
+        $source =~ s/\;.*\n//g if $source =~ /\;/;
+        grep !/^\s*$/, split /(\'\(|\(|\)|"(?:[^"\\]|\\.)*"|\s)/ => $source;
+    }
+
+    method parse ($source) {
+        @stack = (+[]);
+        my @tokens = $self->tokenizer($source);
+        while (@tokens) {
+            my $token = shift @tokens;
+            if ($token =~ /^\'[^\(]/) {
+                $token =~ s/^\'//;
+                push @stack => +[ Sym->new(ident => 'quote' ) ];
+                unshift @tokens => ')';
+            }
+            given ($token) {
+                when (/^\"/)   { push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) ); }
+                when (/^\d+$/) { push $stack[-1]->@*, Num->new( raw => $token+0 ); }
+                when ('nil')   { push $stack[-1]->@*, Nil->new; }
+                when ('true')  { push $stack[-1]->@*, Bool->TRUE; }
+                when ('false') { push $stack[-1]->@*, Bool->FALSE; }
+                when ('\'(')   { push @stack => +[ Sym->new(ident => 'quote' ) ]; }
+                when ('(')     { push @stack => +[]; }
+                when (')')     {
+                    my $list = pop @stack;
+                    push $stack[-1]->@*, (scalar $list->@* > 0)
+                        ? Cons->of( $list->@* )
+                        : Nil->new;
+                }
+                default {
+                    push $stack[-1]->@*,
+                        $token =~ /^\:/
+                            ? Tag->new( ident => $token )
+                            : Sym->new( ident => $token );
+                }
+            }
+        }
+        return $stack[-1];
+    }
+}
+
+## -----------------------------------------------------------------------------
+## Compiler
+## -----------------------------------------------------------------------------
+## NOTES:
+## - link could break lexical shadowing of builtins
+## - link is also done when spawn happens, which could get tricky
+## -----------------------------------------------------------------------------
+
 
 class Compiler {
     method link ($env, $expr) {
@@ -593,7 +658,7 @@ class Compiler {
             @exprs = map {
                 if ($_ isa Cons
                 &&  $_->head isa Callable
-                &&  $_->head->name eq 'defun') {
+                &&  $_->head->name->ident eq 'defun') {
                     my ($name, $params, $body) = $_->tail->uncons;
                     $env = $env->derive(
                         $name->ident, Lambda->new(
@@ -607,7 +672,7 @@ class Compiler {
                     ();
                 } elsif ($_ isa Cons
                     &&  $_->head isa Callable
-                    &&  $_->head->name eq 'let') {
+                    &&  $_->head->name->ident eq 'let') {
                     my ($name, $value) = $_->tail->uncons;
                     if ($value isa Literal) {
                         $env = $env->derive( $name->ident, $value );
@@ -835,63 +900,6 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
-class PID :isa(Term) {
-    field $id      :param :reader;
-    field $channel :param :reader;
-    field $strand  :param :reader;
-
-    method to_string {
-        sprintf 'PID<%04d>' => $id;
-    }
-
-    method DUMP {
-        sprintf 'PID<%04d> %s' => $id, $channel->to_string;
-    }
-}
-
-## -----------------------------------------------------------------------------
-
-class Channel :isa(Term) {
-    # FIXME: turn this into something else
-    # not just a name, and maybe associate
-    # it with PID id somehow???
-    field $name :param :reader = undef;
-
-    field @w_buffer :reader;
-    field @r_buffer  :reader;
-
-    our $ID_SEQ = 0;
-    ADJUST {
-        $name //= sprintf '%02d' => ++$ID_SEQ;
-    }
-
-    method can_read    { !! scalar @r_buffer }
-    method has_pending { !! scalar @w_buffer }
-
-    method read { shift @r_buffer }
-
-    method write (@terms) { push @w_buffer => @terms; return; }
-
-    method flush {
-        push @r_buffer => @w_buffer;
-        @w_buffer = ();
-        return $self->can_read;
-    }
-
-    method to_string {
-        sprintf 'ch<%s>:r[%d]:w[%d]' => $name, (scalar @r_buffer), (scalar @w_buffer);
-    }
-
-    method DUMP {
-        sprintf '%s {%s}<-{%s}' =>
-            $self->to_string,
-            (join ', ' => @r_buffer),
-            (join ', ' => @w_buffer);
-    }
-}
-
-## -----------------------------------------------------------------------------
-
 class Channel::TTY :isa(Channel) {
     method can_read { true }
     method read { return Str->new( raw => my $input = <> ) }
@@ -958,7 +966,7 @@ class Runtime {
                 '>'  => Native->new( name => '>',  proc => sub ($n, $m) { $n->raw >  $m->raw ? Bool->TRUE : Bool->FALSE }),
                 '<'  => Native->new( name => '<',  proc => sub ($n, $m) { $n->raw <  $m->raw ? Bool->TRUE : Bool->FALSE }),
 
-                '~'  => Native->new( name => '~',  proc => sub ($n, $m) { Str->new( raw => $n->stringify.$m->stringify ) }),
+                '~'  => Native->new( name => '~',  proc => sub (@args) { Str->new( raw => join '' => map $_->stringify, @args ) }),
 
                 'eq' => Native->new( name => 'eq', proc => sub ($n, $m) { $n->raw eq $m->raw ? Bool->TRUE : Bool->FALSE }),
                 'ne' => Native->new( name => 'ne', proc => sub ($n, $m) { $n->raw ne $m->raw ? Bool->TRUE : Bool->FALSE }),
@@ -966,6 +974,41 @@ class Runtime {
                 'ge' => Native->new( name => 'ge', proc => sub ($n, $m) { $n->raw ge $m->raw ? Bool->TRUE : Bool->FALSE }),
                 'gt' => Native->new( name => 'gt', proc => sub ($n, $m) { $n->raw gt $m->raw ? Bool->TRUE : Bool->FALSE }),
                 'lt' => Native->new( name => 'lt', proc => sub ($n, $m) { $n->raw lt $m->raw ? Bool->TRUE : Bool->FALSE }),
+
+                'atom?'     => Native->new( name => 'atom?',     proc => sub ($n, $m) { $n isa Literal  ? Bool->TRUE : Bool->FALSE }),
+                'list?'     => Native->new( name => 'bool?',     proc => sub ($n, $m) { $n isa List     ? Bool->TRUE : Bool->FALSE }),
+                'callable?' => Native->new( name => 'callable?', proc => sub ($n, $m) { $n isa Callable ? Bool->TRUE : Bool->FALSE }),
+                'nil?'      => Native->new( name => 'nil?',      proc => sub ($n, $m) { $n isa Nil      ? Bool->TRUE : Bool->FALSE }),
+                'num?'      => Native->new( name => 'num?',      proc => sub ($n, $m) { $n isa Num      ? Bool->TRUE : Bool->FALSE }),
+                'str?'      => Native->new( name => 'str?',      proc => sub ($n, $m) { $n isa Str      ? Bool->TRUE : Bool->FALSE }),
+                'bool?'     => Native->new( name => 'bool?',     proc => sub ($n, $m) { $n isa Bool     ? Bool->TRUE : Bool->FALSE }),
+                'tag?'      => Native->new( name => 'tag?',      proc => sub ($n, $m) { $n isa Tag      ? Bool->TRUE : Bool->FALSE }),
+                'sym?'      => Native->new( name => 'sym?',      proc => sub ($n, $m) { $n isa Sym      ? Bool->TRUE : Bool->FALSE }),
+                'native?'   => Native->new( name => 'native?',   proc => sub ($n, $m) { $n isa Native   ? Bool->TRUE : Bool->FALSE }),
+                'lambda?'   => Native->new( name => 'lambda?',   proc => sub ($n, $m) { $n isa Lambda   ? Bool->TRUE : Bool->FALSE }),
+                'channel?'  => Native->new( name => 'channel?',  proc => sub ($n, $m) { $n isa Channel  ? Bool->TRUE : Bool->FALSE }),
+                'pid?'      => Native->new( name => 'pid?',      proc => sub ($n, $m) { $n isa PID      ? Bool->TRUE : Bool->FALSE }),
+
+                'list'  => Native->new( name => 'list',  proc => sub (@args)  { Cons->of( @args ) }),
+                'cons'  => Native->new( name => 'cons',  proc => sub ($h, $t) { Cons->new( head => $h, tail => $t ) }),
+                'car'   => Native->new( name => 'car',   proc => sub ($list)  { $list->head }),
+                'cdr'   => Native->new( name => 'cdr',   proc => sub ($list)  { $list->tail }),
+                'caar'  => Native->new( name => 'caar',  proc => sub ($list)  { $list->head->head }),
+                'cadr'  => Native->new( name => 'cadr',  proc => sub ($list)  { $list->head->tail }),
+                'cdar'  => Native->new( name => 'cdar',  proc => sub ($list)  { $list->tail->head }),
+                'cadar' => Native->new( name => 'cadar', proc => sub ($list)  { $list->head->tail->head }),
+                'caddr' => Native->new( name => 'caddr', proc => sub ($list)  { $list->head->tail->tail }),
+                'cddar' => Native->new( name => 'cddar', proc => sub ($list)  { $list->tail->tail->head }),
+
+                'quote' => Native->new(
+                    name => 'quote',
+                    proc => sub ($ctx, @args) {
+                        $ctx->strand->return_value(
+                            scalar @args == 1 ? $args[0] : Cons->of( @args )
+                        )
+                    },
+                    is_operative => true,
+                ),
 
                 'lambda' => Native->new(
                     name => 'lambda',
@@ -1096,17 +1139,17 @@ class Runtime {
 
         while (true) {
             my $pid = shift @pids;
-            say "Flushing channel for ",$pid->to_string,' @ ',$pid->strand->steps;
-            say '-' x 80;
+            #say "Flushing channel for ",$pid->to_string,' @ ',$pid->strand->steps;
+            #say '-' x 80;
             $pid->channel->flush if $pid->channel->has_pending;
-            say "BEFORE: ",$pid->channel->DUMP;
-            say '-' x 80;
-            say "Running ... ",$pid->to_string,' @ ',$pid->strand->steps;
-            say '-' x 80;
+            #say "BEFORE: ",$pid->channel->DUMP;
+            #say '-' x 80;
+            #say "Running ... ",$pid->to_string,' @ ',$pid->strand->steps;
+            #say '-' x 80;
             my @trace  = $pid->strand->resume;
-            say '-' x 80;
-            say "AFTER: ",$pid->channel->DUMP;
-            say '-' x 80;
+            #say '-' x 80;
+            #say "AFTER: ",$pid->channel->DUMP;
+            #say '-' x 80;
 
             if ($trace[-1]->isa('Error')) {
                 say "Error ... ",$pid->to_string,' @ ',$pid->strand->steps;
@@ -1119,10 +1162,10 @@ class Runtime {
                 say "Halting ... ",$pid->to_string,' @ ',$pid->strand->steps;
                 last unless @pids;
             } else {
-                say "Yielding ... ",$pid->to_string,' @ ',$pid->strand->steps;
+                #say "Yielding ... ",$pid->to_string,' @ ',$pid->strand->steps;
                 push @pids => $pid;
             }
-            say '=' x 80;
+            #say '=' x 80;
             #my $x = <>;
         }
 
@@ -1135,18 +1178,30 @@ my $host = Runtime->new;
 
 my $exprs = $host->parse(q[
 
-(defun echo ()
-    (do
-        (let msg (recv))
-        (say (~ "GOT: " msg))
-        (if (eq msg ":q") ()
-            (yield (echo)))))
+(defun PingPong (kind) (do
+    (let msg (recv))
+    (let count (car  msg))
+    (let $pong (cdar msg))
+    (say (~ "Got " count " from " $pong " in " ($$)))
+    (if (== count 0)
+        (say (~ "... Game Over at " kind " in " ($$)))
+        (if (== count 1)
+            (do
+                (send $pong (list 0 ($$)))
+                (say (~ "Game Over at " kind " in " ($$)))
+            )
+            (do
+                (send $pong (list (- count 1) ($$)))
+                (yield (PingPong kind))
+            )
+        )
+    )
+))
 
-(let $echo (spawn (echo)))
+(let $ping (spawn (PingPong :ping)))
+(let $pong (spawn (PingPong :pong)))
 
-(send $echo "Hello World")
-(send $echo "Goodbye World")
-(send $echo ":q")
+(send $ping (list 10 $pong))
 
 ]);
 
@@ -1207,6 +1262,21 @@ __DATA__
 
 
 
+(defun echo ()
+    (do
+        (let msg (recv))
+        (say (~ "GOT: " msg " in " ($$)))
+        (if (eq msg ":q") ()
+            (yield (echo)))))
+
+(let $echo1 (spawn (echo)))
+(let $echo2 (spawn (echo)))
+
+(send $echo2 "Hello World")
+(send $echo1 "Hello World")
+(send $echo2 "Goodbye World")
+(send $echo1 ":q")
+(send $echo2 ":q")
 
 
 
