@@ -257,8 +257,8 @@ class Eval::Expr :isa(Kontinue) {
                         $head = $next->kontinue( $ctx, $expr->head );
                     }
                     elsif ($expr->head isa Sym) {
-                        my $call = $ctx->lookup( $expr->head );
-                        return $ctx->throw_error("Unable to find ".$expr->head." in Env", $self)
+                        my $call = $ctx->strand->lookup( $expr->head );
+                        return $ctx->strand->throw_error("Unable to find ".$expr->head." in Env", $self)
                             if not defined $call;
                         $head = $next->kontinue( $ctx, $call );
                     }
@@ -272,13 +272,13 @@ class Eval::Expr :isa(Kontinue) {
                 return Eval::Expr->new( expr => $expr->head, kont => $next );
             }
             when ('Sym') {
-                my $value = $ctx->lookup($expr);
-                return $ctx->throw_error("Unable to find ${expr} in Env", $self)
+                my $value = $ctx->strand->lookup($expr);
+                return $ctx->strand->throw_error("Unable to find ${expr} in Env", $self)
                     if not defined $value;
-                return $ctx->return_value($value, $self->kont);
+                return $ctx->strand->return_value($value, $self->kont);
             }
             default {
-                return $ctx->return_value($expr, $self->kont);
+                return $ctx->strand->return_value($expr, $self->kont);
             }
         }
     }
@@ -296,13 +296,13 @@ class Apply::Expr :isa(Kontinue) {
 
         my $next = Apply::Call->new( call => $call, kont => $self->kont );
 
-        return $ctx->return_value( $args, $next ) if $call->is_operative;
+        return $ctx->strand->return_value( $args, $next ) if $call->is_operative;
 
         if (::OPTIMIZE_CALLS) {
             if ($args->is_nil) {
                 return $next;
             } elsif ($args->tail->is_nil) {
-                return $ctx->return_value( Cons->of( $args->head ), $next )
+                return $ctx->strand->return_value( Cons->of( $args->head ), $next )
                     if $args->head isa Literal;
                 return Eval::Expr->new( expr => $args->head, kont => $next );
             } else {
@@ -337,7 +337,7 @@ class Eval::Args :isa(Kontinue) {
         }
 
         # if no more left, return it
-        return $ctx->return_value( $done->reverse, $self->kont )
+        return $ctx->strand->return_value( $done->reverse, $self->kont )
             if $rest->is_nil;
 
         return Eval::Expr->new(
@@ -367,17 +367,17 @@ class Apply::Call :isa(Kontinue) {
         my $params = $call->params;
         if ($args isa List) {
             until ($params->is_nil) {
-                return $ctx->throw_error("Arity Mismatch - missing:${params}", $self)
+                return $ctx->strand->throw_error("Arity Mismatch - missing:${params}", $self)
                     if $args->is_nil;
                 $local{ $params->head->ident } = $args->head;
                 $params = $params->tail;
                 $args   = $args->tail;
             }
-            return $ctx->throw_error("Arity Mismatch - additional:${args}", $self)
+            return $ctx->strand->throw_error("Arity Mismatch - additional:${args}", $self)
                 unless $args->is_nil;
         } else {
-            return $ctx->throw_error("Arity Mismatch - additional:${args}", $self) if $params->is_nil;
-            return $ctx->throw_error("Arity Mismatch - missing:${params}",  $self) unless $params->tail->is_nil;
+            return $ctx->strand->throw_error("Arity Mismatch - additional:${args}", $self) if $params->is_nil;
+            return $ctx->strand->throw_error("Arity Mismatch - missing:${params}",  $self) unless $params->tail->is_nil;
             $local{ $params->head->ident } = $args;
         }
 
@@ -393,11 +393,11 @@ class Apply::Call :isa(Kontinue) {
                 if ($call->is_operative) {
                     return $call->proc->( $ctx, @args );
                 } else {
-                    return $ctx->return_value( $call->proc->( @args ), $self->kont );
+                    return $ctx->strand->return_value( $call->proc->( @args ), $self->kont );
                 }
             }
             when ('Lambda') {
-                return $ctx->wrap_in_scope(
+                return $ctx->strand->wrap_in_scope(
                     $self->bind_params( $ctx, $call, $args ),
                     $call->body,
                     $self->kont
@@ -434,7 +434,7 @@ class Scope::Leave :isa(Kontinue) {
         $result = Nil->new;
         $self->DEBUG('+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
-        return $ctx->return_value( $result, $self->kont );
+        return $ctx->strand->return_value( $result, $self->kont );
     }
 }
 
@@ -442,8 +442,8 @@ class Bind :isa(Kontinue) {
     field $name :param :reader;
     method kontinue ($ctx, $value) {
         $self->DEBUG('name' => $name, '+value' => $value) if ::DEBUG;
-        $ctx->define( $name, $value );
-        return $ctx->return_value( Nil->new, $self->kont );
+        $ctx->strand->define( $name, $value );
+        return $ctx->strand->return_value( Nil->new, $self->kont );
     }
 
     method to_string {
@@ -520,15 +520,15 @@ class Spawn :isa(Kontinue) {
 
     method kontinue ($ctx) {
         $self->DEBUG if ::DEBUG;
-        my $kont = $ctx->host->compile( $ctx->current_env, $expr );
-        my $pid  = $ctx->host->spawn( $kont );
-        return $ctx->return_value( $pid, $self->kont );
+        my $kont = $ctx->strand->host->compile( $ctx->current_env, $expr );
+        my $pid  = $ctx->strand->host->spawn( $kont );
+        return $ctx->strand->return_value( $pid, $self->kont );
     }
 }
 
 class Chan::Read :isa(Kontinue) {
     method kontinue ($ctx, $channel=undef) {
-        $channel = $ctx->strand->pid unless defined $channel;
+        $channel = $ctx unless defined $channel;
 
         if ($channel isa PID) {
             $self->DEBUG('@PID', $channel) if ::DEBUG;
@@ -538,9 +538,9 @@ class Chan::Read :isa(Kontinue) {
         }
         if ($channel->can_read) {
             my $value = $channel->read;
-            return $ctx->return_value( $value, $self->kont );
+            return $ctx->strand->return_value( $value, $self->kont );
         } else {
-            return Yield->new( kont => $ctx->return_value( $channel, $self ) );
+            return Yield->new( kont => $ctx->strand->return_value( $channel, $self ) );
         }
     }
 }
@@ -549,7 +549,7 @@ class Chan::Write :isa(Kontinue) {
     method kontinue ($ctx, $args) {
         my ($channel, $value);
         if ($args->tail->is_nil) {
-            $channel = $ctx->strand->pid;
+            $channel = $ctx;
             $value   = $args->head;
         } else {
             ($channel, $value) = $args->uncons;
@@ -563,7 +563,7 @@ class Chan::Write :isa(Kontinue) {
         }
 
         $channel->write( $value );
-        return $ctx->return_value( Nil->new, $self->kont );
+        return $ctx->strand->return_value( Nil->new, $self->kont );
     }
 }
 
@@ -636,154 +636,20 @@ class Compiler {
 
 ## -----------------------------------------------------------------------------
 
-class Strand::Ref {
-    field $strand :param :reader; # needs weakening
-
-    method current_env     { $strand->current_env }
-    method lookup ($s)     { $strand->lookup( $s ) }
-    method define ($n, $v) { $strand->define( $n, $v ) }
-
-    method wrap_in_scope ($env, $body, $kont) {
-        Scope::Enter->new(
-            env  => $env,
-            kont => Eval::Expr->new(
-                expr => $body,
-                kont => Scope::Leave->new(
-                    kont => $kont
-                )
-            )
-        )
-    }
-
-    method do_block ($exprs, $kont=undef) {
-        my $next = Scope::Leave->new( kont => $kont // $strand->next_kont );
-        foreach my $expr (reverse @$exprs) {
-            $next = Eval::Expr->new(
-                expr => $expr,
-                kont => ($next isa Scope::Leave)
-                        ? $next
-                        : Drop->new( kont => $next ));
-        }
-        return Scope::Enter->new( env => $self->current_env, kont => $next );
-    }
-
-    method bind ($name, $expr, $kont=undef) {
-        Eval::Expr->new(
-            expr => $expr,
-            kont => Bind->new(
-                name => $name,
-                kont => $kont // $strand->next_kont
-            )
-        )
-    }
-
-    method throw_error ($error, $kont=undef) {
-        Error->new( error => $error, kont => $kont // $strand->next_kont )
-    }
-
-    method return_value ($value, $kont=undef) {
-        Return->new( value => $value, kont => $kont // $strand->next_kont )
-    }
-
-    method conditional ($condition, $if_true, $if_false, $kont=undef) {
-        Eval::Expr->new(
-            expr => $condition,
-            kont => Cond->new(
-                if_true  => $if_true,
-                if_false => $if_false,
-                kont     => $kont // $strand->next_kont,
-            )
-        )
-    }
-
-    method yield ($expr, $kont=undef) {
-        Yield->new(
-            kont => Eval::Expr->new(
-                expr => $expr,
-                kont => $kont // $strand->next_kont
-            )
-        )
-    }
-
-    method read_from_channel (@args) {
-        return Chan::Read->new( kont => $strand->next_kont )
-            if scalar @args == 0;
-
-        return Chan::Read->new( kont => $args[0] )
-            if $args[0] isa Kontinue;
-
-        my ($channel, $kont) = @args;
-
-        return Eval::Expr->new(
-            expr => $channel,
-            kont => Chan::Read->new(
-                kont => $kont // $strand->next_kont,
-            )
-        )
-    }
-
-    method write_to_channel (@args) {
-        if (scalar @args == 1) {
-            my ($expr) = @args;
-            return Eval::Args->new(
-                rest => Cons->of( $expr ),
-                kont => Chan::Write->new( kont => $strand->next_kont )
-            )
-        }
-        elsif (scalar @args == 3) {
-            my ($channel, $expr, $kont) = @args;
-            return Eval::Args->new(
-                rest => Cons->of( $channel, $expr ),
-                kont => Chan::Write->new( kont => $kont )
-            )
-        }
-        elsif (scalar @args == 2) {
-            my ($expr, $kont);
-            if ($args[-1] isa Kontinue) {
-                $expr = Cons->of( $args[0] );
-                $kont = $args[1];
-            } else {
-                $expr = Cons->of( @args );
-            }
-            return Eval::Args->new(
-                rest => $expr,
-                kont => Chan::Write->new( kont => $kont // $strand->next_kont )
-            )
-        }
-        else {
-            die "WTF too many args dude!"
-        }
-    }
-
-    method spawn_pid ($expr, $kont=undef) {
-        Spawn->new( expr => $expr, kont => $kont // $strand->next_kont )
-    }
-
-    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
-}
-
-## -----------------------------------------------------------------------------
-
 class Strand {
-    field $host  :param :reader; # cycle via PID (host <-> pid <-> strand)
+    field $host  :param :reader;
     field $enter :param :reader;
+    field $pid   :param :reader;
 
-    field $pid    :reader; # needs weakening
-    field $ref    :reader;
     field $steps  :reader;
     field @trace  :reader;
     field @envs   :reader;
 
     ADJUST {
-        $ref    = Strand::Ref->new( strand => $self );
-        $steps  = 0;
+        $pid   = PID->new( id => $pid, strand => $self, channel => Channel->new );
+        $steps = 0;
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
-
-    ## -------------------------------------------------------------------------
-    ## GROSS!!
-
-    method assign_pid ($p) { $pid = $p }
 
     ## -------------------------------------------------------------------------
 
@@ -808,6 +674,123 @@ class Strand {
     method prev_kont { $trace[-1] }
     method next_kont { $trace[-1]->kont }
 
+    method throw_error ($error, $kont=undef) {
+        Error->new( error => $error, kont => $kont // $self->next_kont )
+    }
+
+    method return_value ($value, $kont=undef) {
+        Return->new( value => $value, kont => $kont // $self->next_kont )
+    }
+
+
+    method wrap_in_scope ($env, $body, $kont) {
+        Scope::Enter->new(
+            env  => $env,
+            kont => Eval::Expr->new(
+                expr => $body,
+                kont => Scope::Leave->new(
+                    kont => $kont
+                )
+            )
+        )
+    }
+
+    method do_block ($exprs, $kont=undef) {
+        my $next = Scope::Leave->new( kont => $kont // $self->next_kont );
+        foreach my $expr (reverse @$exprs) {
+            $next = Eval::Expr->new(
+                expr => $expr,
+                kont => ($next isa Scope::Leave)
+                        ? $next
+                        : Drop->new( kont => $next ));
+        }
+        return Scope::Enter->new( env => $self->current_env, kont => $next );
+    }
+
+    method bind ($name, $expr, $kont=undef) {
+        Eval::Expr->new(
+            expr => $expr,
+            kont => Bind->new(
+                name => $name,
+                kont => $kont // $self->next_kont
+            )
+        )
+    }
+
+    method conditional ($condition, $if_true, $if_false, $kont=undef) {
+        Eval::Expr->new(
+            expr => $condition,
+            kont => Cond->new(
+                if_true  => $if_true,
+                if_false => $if_false,
+                kont     => $kont // $self->next_kont,
+            )
+        )
+    }
+
+    method yield ($expr, $kont=undef) {
+        Yield->new(
+            kont => Eval::Expr->new(
+                expr => $expr,
+                kont => $kont // $self->next_kont
+            )
+        )
+    }
+
+    method read_from_channel (@args) {
+        return Chan::Read->new( kont => $self->next_kont )
+            if scalar @args == 0;
+
+        return Chan::Read->new( kont => $args[0] )
+            if $args[0] isa Kontinue;
+
+        my ($channel, $kont) = @args;
+
+        return Eval::Expr->new(
+            expr => $channel,
+            kont => Chan::Read->new(
+                kont => $kont // $self->next_kont,
+            )
+        )
+    }
+
+    method write_to_channel (@args) {
+        if (scalar @args == 1) {
+            my ($expr) = @args;
+            return Eval::Args->new(
+                rest => Cons->of( $expr ),
+                kont => Chan::Write->new( kont => $self->next_kont )
+            )
+        }
+        elsif (scalar @args == 3) {
+            my ($channel, $expr, $kont) = @args;
+            return Eval::Args->new(
+                rest => Cons->of( $channel, $expr ),
+                kont => Chan::Write->new( kont => $kont )
+            )
+        }
+        elsif (scalar @args == 2) {
+            my ($expr, $kont);
+            if ($args[-1] isa Kontinue) {
+                $expr = Cons->of( $args[0] );
+                $kont = $args[1];
+            } else {
+                $expr = Cons->of( @args );
+            }
+            return Eval::Args->new(
+                rest => $expr,
+                kont => Chan::Write->new( kont => $kont // $self->next_kont )
+            )
+        }
+        else {
+            die "WTF too many args dude!"
+        }
+    }
+
+    method spawn_pid ($expr, $kont=undef) {
+        Spawn->new( expr => $expr, kont => $kont // $self->next_kont )
+    }
+
     ## -------------------------------------------------------------------------
 
     method run { $self->execute( $enter ) }
@@ -823,7 +806,7 @@ class Strand {
     method resume {
         return $self->execute( $enter ) unless @trace;
         return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
-        return $self->execute( $self->ref->throw_error(
+        return $self->execute( $self->throw_error(
             "You can only resume from enter, or from a Yield, not ".$self->prev_kont,
         ));
     }
@@ -840,13 +823,31 @@ class Strand {
             #}
             when ('Return') {
                 push @trace => $kont->kont;
-                return $kont->kont->kontinue( $self->ref, $kont->value );
+                return $kont->kont->kontinue( $self->pid, $kont->value );
             }
             default {
-                return $kont->kontinue( $self->ref );
+                return $kont->kontinue( $self->pid );
             }
         }
     }
+}
+
+## -----------------------------------------------------------------------------
+
+class PID :isa(Term) {
+    field $id      :param :reader;
+    field $channel :param :reader;
+    field $strand  :param :reader;
+
+    method to_string {
+        sprintf 'PID<%04d>' => $id;
+    }
+
+    method DUMP {
+        sprintf 'PID<%04d> %s' => $id, $channel->to_string;
+    }
+
+    ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++ }
 }
 
 ## -----------------------------------------------------------------------------
@@ -901,31 +902,13 @@ class Channel::TTY :isa(Channel) {
 
 ## -----------------------------------------------------------------------------
 
-class PID :isa(Term) {
-    field $id      :param :reader;
-    field $channel :param :reader;
-    field $strand  :param :reader;
-    field $alias   :param :reader = undef;
-
-    ADJUST { $strand->assign_pid( $self ) }
-
-    method to_string {
-        sprintf 'PID<%04d>%s' => $id,
-            (defined $alias ? ('['.$alias->to_string.']') : '')
-    }
-}
-
-## -----------------------------------------------------------------------------
-
 class Runtime {
     field $root_env :reader;
     field $compiler :reader;
     field $parser   :reader;
     field $stdin    :reader;
     field $stdout   :reader;
-
-    field @pids;
-    field $PID_SEQ = 0;
+    field @pids     :reader;
 
     ADJUST {
         $root_env = $self->initialize_root_env;
@@ -945,18 +928,14 @@ class Runtime {
 
     ## -------------------------------------------------------------------------
 
-    method initialize_strand ($kont) { Strand->new( host => $self, enter => $kont ) }
-
-    method initialize_channel { Channel->new }
-
     method spawn ($kont) {
-        my $pid = PID->new(
-            id      => ++$PID_SEQ,
-            channel => $self->initialize_channel,
-            strand  => $self->initialize_strand($kont),
+        my $strand = Strand->new(
+            pid   => (scalar @pids),
+            host  => $self,
+            enter => $kont,
         );
-        push @pids => $pid;
-        return $pid;
+        push @pids => $strand->pid;
+        return $strand->pid;
     }
 
     ## -------------------------------------------------------------------------
@@ -981,8 +960,14 @@ class Runtime {
 
                 'lambda' => Native->new(
                     name => 'lambda',
-                    proc => sub ($ctx, $p, $b) {
-                        $ctx->return_value( Lambda->new( params => $p, body => $b, env => $ctx->current_env ) )
+                    proc => sub ($ctx, $params, $body) {
+                        $ctx->strand->return_value(
+                            Lambda->new(
+                                params => $params,
+                                body   => $body,
+                                env    => $ctx->strand->current_env
+                            )
+                        )
                     },
                     is_operative => true,
                 ),
@@ -990,39 +975,39 @@ class Runtime {
                 'if' => Native->new(
                     name => 'if',
                     proc => sub ($ctx, $condition, $if_true, $if_false) {
-                        $ctx->conditional( $condition, $if_true, $if_false )
+                        $ctx->strand->conditional( $condition, $if_true, $if_false )
                     },
                     is_operative => true,
                 ),
 
                 'do' => Native->new(
                     name => 'do',
-                    proc => sub ($ctx, @exprs) { $ctx->do_block( \@exprs ) },
+                    proc => sub ($ctx, @exprs) { $ctx->strand->do_block( \@exprs ) },
                     is_operative => true,
                 ),
 
                 'yield' => Native->new(
                     name => 'yield',
-                    proc => sub ($ctx, $expr) { $ctx->yield( $expr ) },
+                    proc => sub ($ctx, $expr) { $ctx->strand->yield( $expr ) },
                     is_operative => true,
                 ),
 
                 'let' => Native->new(
                     name => 'let',
-                    proc => sub ($ctx, $name, $value) { $ctx->bind( $name, $value ) },
+                    proc => sub ($ctx, $name, $value) { $ctx->strand->bind( $name, $value ) },
                     is_operative => true,
                 ),
 
                 'defun' => Native->new(
                     name => 'defun',
                     proc => sub ($ctx, $name, $params, $body) {
-                        return $ctx->bind(
+                        return $ctx->strand->bind(
                             $name,
                             Lambda->new(
                                 name   => $name,
                                 params => $params,
                                 body   => $body,
-                                env    => $ctx->current_env,
+                                env    => $ctx->strand->current_env,
                             )
                         )
                     },
@@ -1035,19 +1020,19 @@ class Runtime {
 
                 'spawn' => Native->new(
                     name => 'spawn',
-                    proc => sub ($ctx, $expr) { $ctx->spawn_pid( $expr ) },
+                    proc => sub ($ctx, $expr) { $ctx->strand->spawn_pid( $expr ) },
                     is_operative => true,
                 ),
 
                 'recv' => Native->new(
                     name => 'recv',
-                    proc => sub ($ctx, @args) { $ctx->read_from_channel( @args ) },
+                    proc => sub ($ctx, @args) { $ctx->strand->read_from_channel( @args ) },
                     is_operative => true,
                 ),
 
                 'send' => Native->new(
                     name => 'send',
-                    proc => sub ($ctx, @args) { $ctx->write_to_channel( @args ) },
+                    proc => sub ($ctx, @args) { $ctx->strand->write_to_channel( @args ) },
                     is_operative => true,
                 ),
 
@@ -1057,32 +1042,32 @@ class Runtime {
 
                 '*stdin' => Native->new(
                     name => '*stdin',
-                    proc => sub ($ctx) { $ctx->return_value( $ctx->strand->host->stdin ) },
+                    proc => sub ($ctx) { $ctx->strand->return_value( $ctx->strand->host->stdin ) },
                     is_operative => true,
                 ),
 
                 '*stdout' => Native->new(
                     name => '*stdout',
-                    proc => sub ($ctx) { $ctx->return_value( $ctx->strand->host->stdout ) },
+                    proc => sub ($ctx) { $ctx->strand->return_value( $ctx->strand->host->stdout ) },
                     is_operative => true,
                 ),
 
                 '<>' => Native->new(
                     name => '<>',
-                    proc => sub ($ctx) { $ctx->read_from_channel( $ctx->strand->host->stdin ) },
+                    proc => sub ($ctx) { $ctx->strand->read_from_channel( $ctx->strand->host->stdin ) },
                     is_operative => true,
                 ),
                 'print' => Native->new(
                     name => 'print',
                     proc => sub ($ctx, $expr) {
-                        $ctx->write_to_channel( $ctx->strand->host->stdout, $expr )
+                        $ctx->strand->write_to_channel( $ctx->strand->host->stdout, $expr )
                     },
                     is_operative => true,
                 ),
                 'say' => Native->new(
                     name => 'say',
                     proc => sub ($ctx, $expr) {
-                        $ctx->write_to_channel( $ctx->strand->host->stdout, Cons->of( Sym->new(ident => '~'), $expr, Str->new(raw => "\n") ) )
+                        $ctx->strand->write_to_channel( $ctx->strand->host->stdout, Cons->of( Sym->new(ident => '~'), $expr, Str->new(raw => "\n") ) )
                     },
                     is_operative => true,
                 ),
@@ -1136,8 +1121,7 @@ my $host = Runtime->new;
 my $exprs = $host->parse(q[
 
 (send 10)
-(send 20)
-(say (+ (recv) (recv)))
+(say (recv))
 
 ]);
 
