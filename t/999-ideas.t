@@ -73,7 +73,9 @@ class Cons :isa(List) {
         return @list;
     }
 
-    method to_string { sprintf '(%s)' => join ' ' => map $_->to_string, $self->uncons }
+    method to_string { sprintf '(%s)' => join ' ' => map {
+        blessed $_ ? $_->to_string : die $_
+    } $self->uncons }
 }
 
 class Literal :isa(Term) {}
@@ -566,6 +568,7 @@ class Parser {
                 }
             }
         }
+
         return $stack[-1];
     }
 }
@@ -573,43 +576,100 @@ class Parser {
 ## -----------------------------------------------------------------------------
 ## Compiler
 ## -----------------------------------------------------------------------------
-## NOTES:
-## - link could break lexical shadowing of builtins
-## - link is also done when spawn happens, which could get tricky
-## -----------------------------------------------------------------------------
-
 
 class Compiler {
-    method link ($env, $expr) {
-        given (blessed $expr) {
-            when ('Cons') {
-                return Cons->of( map { $self->link( $env, $_ ) } $expr->uncons );
-            }
-            when ('Sym') {
-                return $env->lookup($expr) // $expr;
-            }
-            default {
-                return $expr;
-            }
-        }
+    method compile ($env, $exprs) {
+        $self->compile_block($env, $exprs, Halt->new);
     }
 
-    method compile ($env, $exprs) {
-        my $kont  = Scope::Leave->new( kont => Halt->new );
-        my @exprs = map { $self->link( $env, $_ ) } @$exprs;
-        foreach my $expr (reverse @exprs) {
-            $kont = Eval::Expr->new(
+    method compile_block ($env, $exprs, $kont) {
+        my $next = Scope::Leave->new( kont => $kont );
+        foreach my $expr (reverse @$exprs) {
+            $next = Eval::Expr->new(
                 expr => $expr,
-                kont => ($kont isa Scope::Leave)
-                        ? $kont
-                        : Drop->new( kont => $kont ));
+                kont => ($next isa Scope::Leave)
+                        ? $next
+                        : Drop->new( kont => $next ));
         }
-        return Scope::Enter->new( env => $env, kont => $kont );
+        return Scope::Enter->new( env => $env, kont => $next );
+    }
+
+    method throw_error ($error, $kont) {
+        Error->new( error => $error, kont => $kont )
+    }
+
+    method return_value ($value, $kont) {
+        Return->new( value => $value, kont => $kont )
+    }
+
+
+    method wrap_in_scope ($env, $body, $kont) {
+        Scope::Enter->new(
+            env  => $env,
+            kont => Eval::Expr->new(
+                expr => $body,
+                kont => Scope::Leave->new(
+                    kont => $kont
+                )
+            )
+        )
+    }
+
+    method bind ($name, $expr, $kont) {
+        Eval::Expr->new(
+            expr => $expr,
+            kont => Bind->new(
+                name => $name,
+                kont => $kont
+            )
+        )
+    }
+
+    method conditional ($condition, $if_true, $if_false, $kont) {
+        Eval::Expr->new(
+            expr => $condition,
+            kont => Cond->new(
+                if_true  => $if_true,
+                if_false => $if_false,
+                kont     => $kont,
+            )
+        )
+    }
+
+    method spawn_pid ($expr, $kont) {
+        Spawn->new( expr => $expr, kont => $kont )
+    }
+
+    method yield ($expr, $kont) {
+        Yield->new(
+            kont => Eval::Expr->new(
+                expr => $expr,
+                kont => $kont
+            )
+        )
+    }
+
+    method read_from_channel ($pid, $kont) {
+        Eval::Expr->new(
+            expr => $pid,
+            kont => Chan::Read->new(
+                kont => $kont
+            )
+        )
+    }
+
+    method write_to_channel ($pid, $expr, $kont) {
+        Eval::Args->new(
+            rest => Cons->of( $pid, $expr ),
+            kont => Chan::Write->new( kont => $kont )
+        )
     }
 
     ADJUST { $::ALLOCATIONS{MISC}->{ blessed $self }++; }
 }
 
+## -----------------------------------------------------------------------------
+## Strand (of Execution)
 ## -----------------------------------------------------------------------------
 
 class Strand {
@@ -649,120 +709,44 @@ class Strand {
     method next_kont { $trace[-1]->kont }
 
     method throw_error ($error, $kont=undef) {
-        Error->new( error => $error, kont => $kont // $self->next_kont )
+        $host->compiler->throw_error( $error, $kont // $self->next_kont )
     }
 
     method return_value ($value, $kont=undef) {
-        Return->new( value => $value, kont => $kont // $self->next_kont )
+        $host->compiler->return_value( $value, $kont // $self->next_kont )
     }
 
 
     method wrap_in_scope ($env, $body, $kont) {
-        Scope::Enter->new(
-            env  => $env,
-            kont => Eval::Expr->new(
-                expr => $body,
-                kont => Scope::Leave->new(
-                    kont => $kont
-                )
-            )
-        )
+        $host->compiler->wrap_in_scope( $env, $body, $kont // $self->next_kont )
     }
 
     method do_block ($exprs, $kont=undef) {
-        my $next = Scope::Leave->new( kont => $kont // $self->next_kont );
-        foreach my $expr (reverse @$exprs) {
-            $next = Eval::Expr->new(
-                expr => $expr,
-                kont => ($next isa Scope::Leave)
-                        ? $next
-                        : Drop->new( kont => $next ));
-        }
-        return Scope::Enter->new( env => $self->current_env, kont => $next );
+        $host->compiler->compile_block( $self->current_env, $exprs, $kont // $self->next_kont )
     }
 
     method bind ($name, $expr, $kont=undef) {
-        Eval::Expr->new(
-            expr => $expr,
-            kont => Bind->new(
-                name => $name,
-                kont => $kont // $self->next_kont
-            )
-        )
+        $host->compiler->bind( $name, $expr, $kont // $self->next_kont )
     }
 
     method conditional ($condition, $if_true, $if_false, $kont=undef) {
-        Eval::Expr->new(
-            expr => $condition,
-            kont => Cond->new(
-                if_true  => $if_true,
-                if_false => $if_false,
-                kont     => $kont // $self->next_kont,
-            )
-        )
+        $host->compiler->conditional( $condition, $if_true, $if_false, $kont // $self->next_kont )
     }
 
     method yield ($expr, $kont=undef) {
-        Yield->new(
-            kont => Eval::Expr->new(
-                expr => $expr,
-                kont => $kont // $self->next_kont
-            )
-        )
+        $host->compiler->yield( $expr, $kont // $self->next_kont )
     }
 
-    method read_from_channel (@args) {
-        return Chan::Read->new( kont => $self->next_kont )
-            if scalar @args == 0;
-
-        return Chan::Read->new( kont => $args[0] )
-            if $args[0] isa Kontinue;
-
-        my ($channel, $kont) = @args;
-
-        return Eval::Expr->new(
-            expr => $channel,
-            kont => Chan::Read->new(
-                kont => $kont // $self->next_kont,
-            )
-        )
+    method read_from_channel ($channel, $kont=undef) {
+        $host->compiler->read_from_channel( $channel, $kont // $self->next_kont );
     }
 
-    method write_to_channel (@args) {
-        if (scalar @args == 1) {
-            my ($expr) = @args;
-            return Eval::Args->new(
-                rest => Cons->of( $expr ),
-                kont => Chan::Write->new( kont => $self->next_kont )
-            )
-        }
-        elsif (scalar @args == 3) {
-            my ($channel, $expr, $kont) = @args;
-            return Eval::Args->new(
-                rest => Cons->of( $channel, $expr ),
-                kont => Chan::Write->new( kont => $kont )
-            )
-        }
-        elsif (scalar @args == 2) {
-            my ($expr, $kont);
-            if ($args[-1] isa Kontinue) {
-                $expr = Cons->of( $args[0] );
-                $kont = $args[1];
-            } else {
-                $expr = Cons->of( @args );
-            }
-            return Eval::Args->new(
-                rest => $expr,
-                kont => Chan::Write->new( kont => $kont // $self->next_kont )
-            )
-        }
-        else {
-            die "WTF too many args dude!"
-        }
+    method write_to_channel ($channel, $expr, $kont=undef) {
+        $host->compiler->write_to_channel( $channel, $expr, $kont // $self->next_kont )
     }
 
     method spawn_pid ($expr, $kont=undef) {
-        Spawn->new( expr => $expr, kont => $kont // $self->next_kont )
+        $host->compiler->spawn_pid( $expr, $kont // $self->next_kont )
     }
 
     ## -------------------------------------------------------------------------
@@ -985,13 +969,19 @@ class Host {
 
                 'recv' => Native->new(
                     name => 'recv',
-                    proc => sub ($ctx, @args) { $ctx->strand->read_from_channel( @args ) },
+                    proc => sub ($ctx, @args) {
+                        unshift @args => $ctx->strand->pid if scalar @args == 0;
+                        $ctx->strand->read_from_channel( @args );
+                    },
                     is_operative => true,
                 ),
 
                 'send' => Native->new(
                     name => 'send',
-                    proc => sub ($ctx, @args) { $ctx->strand->write_to_channel( @args ) },
+                    proc => sub ($ctx, @args) {
+                        unshift @args => $ctx->strand->pid if scalar @args == 1;
+                        $ctx->strand->write_to_channel( @args )
+                    },
                     is_operative => true,
                 ),
 
