@@ -7,21 +7,18 @@ use experimental qw[ class switch ];
 ## -----------------------------------------------------------------------------
 
 use constant DEBUG => $ENV{DEBUG} // 0;
-use constant TRACE => $ENV{TRACE} // 0;
 
-## -----------------------------------------------------------------------------
-
-our %ALLOCATIONS = (
-    TERMS => +{},
-    KONTS => +{},
-    MISC  => +{},
-);
+# track allocation for informational
+# purposes only, this is a hack ;)
+our %ALLOCATIONS = ( TERMS => +{}, KONTS => +{}, MISC  => +{} );
 
 ## -----------------------------------------------------------------------------
 ## Terms
 ## -----------------------------------------------------------------------------
 
 class Term {
+    # NOTE: this is only to make sure
+    # we are not relying on this anywhere
     use overload '""' => sub (@) { use Carp (); Carp::confess("TERM IS NOT AUTOSTRINGIFIED") };
     method to_string { ... }
     method is_nil { false }
@@ -371,7 +368,8 @@ class Apply::Call :isa(Kontinue) {
 ## ...
 
 class Scope::Enter :isa(Kontinue) {
-    field $env :param :reader;
+    field $env  :param :reader;
+
     method kontinue ($ctx) {
         $self->DEBUG($ctx) if ::DEBUG;
         $ctx->strand->enter_scope( $env );
@@ -384,30 +382,16 @@ class Scope::Enter :isa(Kontinue) {
 }
 
 class Scope::Leave :isa(Kontinue) {
+    field $depth :param :reader = 1;
     method kontinue ($ctx, $result=undef) {
         $result = Nil->NIL unless defined $result;
         $self->DEBUG($ctx, '+result' => $result) if ::DEBUG;
-        $ctx->strand->leave_scope;
+        $ctx->strand->leave_scope until $depth-- == 0;
         return $ctx->strand->return_value( $result, $self->kont );
     }
-}
 
-class Call::Enter :isa(Scope::Enter) {
-    field $call :param :reader;
     method to_string {
-        return sprintf '%s[%s][%s] > %s', __CLASS__,
-            ($call->has_name ? $call->name->to_string : '__ANON__'),
-            $self->env->to_string,
-            $self->kont->to_string;
-    }
-}
-
-class Call::Leave :isa(Scope::Leave) {
-    field $call :param :reader;
-    method to_string {
-        return sprintf '%s[%s] > %s', __CLASS__,
-            ($call->has_name ? $call->name->to_string : '__ANON__'),
-            $self->kont->to_string;
+        return sprintf '%s[%d] > %s', __CLASS__, $depth, $self->kont->to_string;
     }
 }
 
@@ -602,7 +586,9 @@ class Compiler {
     }
 
     method compile_block ($env, $exprs, $kont) {
-        my $next = Scope::Leave->new( kont => $kont );
+        my $next = $kont isa Scope::Leave # NOTE: unify this TCO stuff with wrap-call
+                    ? Scope::Leave->new( kont => $kont->kont, depth => $kont->depth + 1 )
+                    : Scope::Leave->new( kont => $kont );
         foreach my $expr (reverse @$exprs) {
             $next = Eval::Expr->new(
                 expr => $expr,
@@ -613,27 +599,24 @@ class Compiler {
         return Scope::Enter->new( env => $env, kont => $next );
     }
 
+    method wrap_call ($env, $call, $kont) {
+        Scope::Enter->new(
+            env  => $env,
+            kont => Eval::Expr->new(
+                expr => $call->body,
+                kont => $kont isa Scope::Leave # NOTE: unify this TCO stuff with compile-block
+                    ? Scope::Leave->new( kont => $kont->kont, depth => $kont->depth + 1 )
+                    : Scope::Leave->new( kont => $kont )
+            )
+        )
+    }
+
     method throw_error ($error, $kont) {
         Error->new( error => $error, kont => $kont )
     }
 
     method return_value ($value, $kont) {
         Return->new( value => $value, kont => $kont )
-    }
-
-
-    method wrap_call ($env, $call, $kont) {
-        Call::Enter->new(
-            call => $call,
-            env  => $env,
-            kont => Eval::Expr->new(
-                expr => $call->body,
-                kont => Call::Leave->new(
-                    call => $call,
-                    kont => $kont
-                )
-            )
-        )
     }
 
     method bind ($name, $expr, $kont) {
@@ -738,10 +721,6 @@ class Strand {
     }
 
     method wrap_call ($env, $call, $kont) {
-        if ($kont isa Call::Leave && refaddr $call == refaddr $kont->call ) {
-            $self->leave_scope;
-            $kont = $kont->kont;
-        }
         $host->compiler->wrap_call( $env, $call, $kont );
     }
 
@@ -1130,6 +1109,9 @@ say "COMPLETED:";
 say '-' x 160;
 foreach my $pid (@pids) {
     say '  > ',$pid->DUMP,' ended with ',$pid->strand->prev_kont->to_string;
+    say join "\n" => map {
+        sprintf '[%s]' => join ', ' => map { $_->to_string } @$_
+    } $pid->strand->envs;
 }
 
 say '-' x 160;
@@ -1151,6 +1133,39 @@ say '-' x 160;
 
 
 __END__
+--------------------------------------------------------------------------------
+
+(defun fact (n)
+    (if (== n 0) 1
+        (* n (fact (- n 1)))))
+
+(say (fact 6))
+
+--------------------------------------------------------------------------------
+
+(defun fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 2)) (fib (- n 1)))))
+
+(say (fib 6))
+
+--------------------------------------------------------------------------------
+
+(defun length (list)
+    (if (nil? list) 0
+        (+ 1 (length (cdr list)))))
+
+(say (length (list 0 1 2 3 4 5 6 7 8 9)))
+
+--------------------------------------------------------------------------------
+
+(defun tail-call-demo (n)
+    (if (== n 0) 0
+       (tail-call-demo (- n 1))))
+
+(say (tail-call-demo 10))
+
+--------------------------------------------------------------------------------
 
 (defun PingPong (kind) (do
     (let msg (recv))
@@ -1177,7 +1192,7 @@ __END__
 
 (send $ping (list 10 $pong))
 
-
+--------------------------------------------------------------------------------
 
 
 
