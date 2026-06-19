@@ -2,6 +2,17 @@
 # NOTES
 <!----------------------------------------------------------------------------->
 
+```
+(actor Bounce ($self $other)
+    (let count (recv $self))
+    (if (== count 1)
+        (exit $self (:notify $other))
+        (send $other (- count 1)))
+    (yield (Bounce $self $other)))
+
+(let $pong (spawn (Ping)))
+```
+
 - create an EDB
     - (assert! Bob :knows Alice)
     - (query?  @_  :knows Alice)

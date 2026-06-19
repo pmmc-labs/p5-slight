@@ -688,53 +688,6 @@ class Strand::Ref {
 
 ## -----------------------------------------------------------------------------
 
-class Channel :isa(Term) {
-    field $name :param :reader = undef;
-
-    field @w_buffer :reader;
-    field @r_buffer  :reader;
-
-    our $ID_SEQ = 0;
-    ADJUST {
-        $name //= sprintf '%02d' => ++$ID_SEQ;
-
-        $::ALLOCATIONS{MISC}->{ blessed $self }++
-    }
-
-    method can_read { !! scalar @r_buffer }
-
-    method read { shift @r_buffer }
-
-    method write (@terms) { push @w_buffer => @terms; return; }
-
-    method flush {
-        push @r_buffer => @w_buffer;
-        @w_buffer = ();
-        return $self->can_read;
-    }
-
-    method to_string {
-        sprintf 'ch<%s>:r[%d]:w[%d]' => $name, (scalar @r_buffer), (scalar @w_buffer);
-    }
-
-    method DUMP {
-        sprintf '%s {%s}<-{%s}' =>
-            $self->to_string,
-            (join ', ' => @r_buffer),
-            (join ', ' => @w_buffer);
-    }
-}
-
-class Channel::TTY :isa(Channel) {
-    method can_read { true }
-    method read { return Str->new( raw => my $input = <> ) }
-    method write ($t) { print $t->stringify }
-    method flush { $self->can_read }
-    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
-}
-
-## -----------------------------------------------------------------------------
-
 class Strand {
     field $host  :param :reader;
     field $enter :param :reader;
@@ -816,6 +769,63 @@ class Strand {
 
 ## -----------------------------------------------------------------------------
 
+class Channel :isa(Term) {
+    field $name :param :reader = undef;
+
+    field @w_buffer :reader;
+    field @r_buffer  :reader;
+
+    our $ID_SEQ = 0;
+    ADJUST {
+        $name //= sprintf '%02d' => ++$ID_SEQ;
+
+        $::ALLOCATIONS{MISC}->{ blessed $self }++
+    }
+
+    method can_read    { !! scalar @r_buffer }
+    method has_pending { !! scalar @w_buffer }
+
+    method read { shift @r_buffer }
+
+    method write (@terms) { push @w_buffer => @terms; return; }
+
+    method flush {
+        push @r_buffer => @w_buffer;
+        @w_buffer = ();
+        return $self->can_read;
+    }
+
+    method to_string {
+        sprintf 'ch<%s>:r[%d]:w[%d]' => $name, (scalar @r_buffer), (scalar @w_buffer);
+    }
+
+    method DUMP {
+        sprintf '%s {%s}<-{%s}' =>
+            $self->to_string,
+            (join ', ' => @r_buffer),
+            (join ', ' => @w_buffer);
+    }
+}
+
+## -----------------------------------------------------------------------------
+
+class Channel::TTY :isa(Channel) {
+    method can_read { true }
+    method read { return Str->new( raw => my $input = <> ) }
+    method write ($t) { print $t->stringify }
+    method flush { $self->can_read }
+    method to_string { sprintf 'ch(%s)[TTY]' => $self->name // '' }
+}
+
+## -----------------------------------------------------------------------------
+
+class PID :isa(Term) {
+    field $channel :param :reader;
+    field $strand  :param :reader;
+}
+
+## -----------------------------------------------------------------------------
+
 class Runtime {
     field $root_env :reader;
     field $compiler :reader;
@@ -833,13 +843,19 @@ class Runtime {
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
 
+    ## -------------------------------------------------------------------------
+
     method parse ($src) { $parser->parse($src) }
 
     method compile ($env, $exprs) { $compiler->compile( $env, $exprs ) }
 
-    method initialize_strand ($kont) {
-        Strand->new( host => $self, enter => $kont )
-    }
+    ## -------------------------------------------------------------------------
+
+    method initialize_strand ($kont) { Strand->new( host => $self, enter => $kont ) }
+
+    method initialize_channel { Channel->new }
+
+    ## -------------------------------------------------------------------------
 
     method initialize_root_env {
         return Env->new(
@@ -966,6 +982,7 @@ class Runtime {
     }
 }
 
+
 my $host = Runtime->new;
 
 my $actors = q[
@@ -1007,8 +1024,8 @@ my $actors = q[
 
 my $exprs = $host->parse($actors);
 
-my $ping_chan = Channel->new;
-my $pong_chan = Channel->new;
+my $ping_chan = $host->initialize_channel;
+my $pong_chan = $host->initialize_channel;
 
 my $env = $host->root_env->derive(
     '$ping' => $ping_chan,
@@ -1020,7 +1037,6 @@ my $Pinger = $host->compile( $env, [ $Ping, $ping ] );
 my $Ponger = $host->compile( $env, [ $Pong, $pong ] );
 my $pinger = $host->initialize_strand( $Pinger );
 my $ponger = $host->initialize_strand( $Ponger );
-
 
 my %names = ( $pinger => 'pinger', $ponger => 'ponger' );
 
@@ -1036,7 +1052,11 @@ my @channels = ($ping_chan, $pong_chan);
 my @queue    = ($pinger, $ponger);
 while (true) {
     #say "Flushing channels ... ";
-    $_->flush foreach @channels;
+    foreach my $ch (@channels) {
+        if ($ch->has_pending) {
+            $ch->flush;
+        }
+    }
     #say '-' x 80;
     #say "  ->ping: ",$ping_chan->DUMP;
     #say "  ->pong: ",$pong_chan->DUMP;
