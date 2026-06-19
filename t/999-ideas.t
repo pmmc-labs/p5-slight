@@ -351,9 +351,9 @@ class Apply::Call :isa(Kontinue) {
                 }
             }
             when ('Lambda') {
-                return $ctx->strand->wrap_in_scope(
+                return $ctx->strand->wrap_call(
                     $self->bind_params( $ctx, $call, $args ),
-                    $call->body,
+                    $call,
                     $self->kont
                 )
             }
@@ -389,6 +389,25 @@ class Scope::Leave :isa(Kontinue) {
         $self->DEBUG($ctx, '+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
         return $ctx->strand->return_value( $result, $self->kont );
+    }
+}
+
+class Call::Enter :isa(Scope::Enter) {
+    field $call :param :reader;
+    method to_string {
+        return sprintf '%s[%s][%s] > %s', __CLASS__,
+            ($call->has_name ? $call->name->to_string : '__ANON__'),
+            $self->env->to_string,
+            $self->kont->to_string;
+    }
+}
+
+class Call::Leave :isa(Scope::Leave) {
+    field $call :param :reader;
+    method to_string {
+        return sprintf '%s[%s] > %s', __CLASS__,
+            ($call->has_name ? $call->name->to_string : '__ANON__'),
+            $self->kont->to_string;
     }
 }
 
@@ -603,12 +622,14 @@ class Compiler {
     }
 
 
-    method wrap_in_scope ($env, $body, $kont) {
-        Scope::Enter->new(
+    method wrap_call ($env, $call, $kont) {
+        Call::Enter->new(
+            call => $call,
             env  => $env,
             kont => Eval::Expr->new(
-                expr => $body,
-                kont => Scope::Leave->new(
+                expr => $call->body,
+                kont => Call::Leave->new(
+                    call => $call,
                     kont => $kont
                 )
             )
@@ -716,9 +737,12 @@ class Strand {
         $host->compiler->return_value( $value, $kont // $self->next_kont )
     }
 
-
-    method wrap_in_scope ($env, $body, $kont) {
-        $host->compiler->wrap_in_scope( $env, $body, $kont // $self->next_kont )
+    method wrap_call ($env, $call, $kont) {
+        if ($kont isa Call::Leave && refaddr $call == refaddr $kont->call ) {
+            $self->leave_scope;
+            $kont = $kont->kont;
+        }
+        $host->compiler->wrap_call( $env, $call, $kont );
     }
 
     method do_block ($exprs, $kont=undef) {
@@ -1053,11 +1077,30 @@ my $host = Host->new;
 
 my $exprs = $host->parse(q[
 
-(defun length (l)
-    (if (nil? l) 0
-        (+ 1 (length (cdr l)))))
+(defun PingPong (kind) (do
+    (let msg (recv))
+    (let count (car  msg))
+    (let $pong (cdar msg))
+    (say (~ "Got " count " from " $pong " in " ($$)))
+    (if (== count 0)
+        (say (~ "... Game Over at " kind " in " ($$)))
+        (if (== count 1)
+            (do
+                (send $pong (list 0 ($$)))
+                (say (~ "... Game Over at " kind " in " ($$)))
+            )
+            (do
+                (send $pong (list (- count 1) ($$)))
+                (yield (PingPong kind))
+            )
+        )
+    )
+))
 
-(length (list 1 2 3 4 5))
+(let $ping (spawn (PingPong :ping)))
+(let $pong (spawn (PingPong :pong)))
+
+(send $ping (list 10 $pong))
 
 ]);
 
