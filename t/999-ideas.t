@@ -11,23 +11,10 @@ use constant TRACE => $ENV{TRACE} // 0;
 
 ## -----------------------------------------------------------------------------
 
-use constant OPTIMIZE_CALLS  => false;
-use constant PRECOMPILE_DEFS => false;
-
-## -----------------------------------------------------------------------------
-
 our %ALLOCATIONS = (
     TERMS => +{},
     KONTS => +{},
     MISC  => +{},
-);
-
-our %STATS = (
-    LOOKUPS     => 0,
-    DEFINITIONS => +{
-        COMPILETIME => +{},
-        RUNTIME     => +{}
-    }
 );
 
 ## -----------------------------------------------------------------------------
@@ -35,7 +22,7 @@ our %STATS = (
 ## -----------------------------------------------------------------------------
 
 class Term {
-    use overload '""' => 'to_string', fallback => false;
+    use overload '""' => sub (@) { use Carp (); Carp::confess("TERM IS NOT AUTOSTRINGIFIED") };
     method to_string { ... }
     method is_nil { false }
 
@@ -57,6 +44,7 @@ class Tag :isa(Term) {
 class List :isa(Term) {}
 
 class Nil :isa(List) {
+    sub NIL { state $t = Nil->new }
     method to_string { '()' }
     method is_nil { true }
     method uncons { () }
@@ -67,7 +55,7 @@ class Cons :isa(List) {
     field $tail :param :reader;
 
     sub of ($, @args) {
-        my $list = Nil->new;
+        my $list = Nil->NIL;
         $list = Cons->new( head => (pop @args), tail => $list )
             while @args;
         return $list;
@@ -103,8 +91,8 @@ class Num :isa(Literal) {
 
 class Bool :isa(Literal) {
     field $raw :param :reader;
-    sub TRUE  { Bool->new( raw => true ) }
-    sub FALSE { Bool->new( raw => false ) }
+    sub TRUE  { state $t = Bool->new( raw => true )  }
+    sub FALSE { state $t = Bool->new( raw => false ) }
     method to_string { $raw ? 'true' : 'false' }
 }
 
@@ -136,7 +124,7 @@ class Native :isa(Callable) {
     field $is_operative :param :reader = false;
     method is_applicative { !$is_operative }
 
-    method to_string { sprintf '#<%s>' => $name }
+    method to_string { sprintf '#<%s>' => $name->to_string }
 }
 
 class PID :isa(Term) {
@@ -154,26 +142,19 @@ class PID :isa(Term) {
 }
 
 class Channel :isa(Term) {
-    # FIXME: turn this into something else
-    # not just a name, and maybe associate
-    # it with PID id somehow???
     field $name :param :reader = undef;
 
     field @w_buffer :reader;
-    field @r_buffer  :reader;
+    field @r_buffer :reader;
 
     our $ID_SEQ = 0;
-    ADJUST {
-        $name //= sprintf '%02d' => ++$ID_SEQ;
-    }
+    ADJUST { $name //= sprintf '%02d' => ++$ID_SEQ; }
 
     method can_read    { !! scalar @r_buffer }
     method has_pending { !! scalar @w_buffer }
 
-    method read { shift @r_buffer }
-
+    method read           { shift @r_buffer }
     method write (@terms) { push @w_buffer => @terms; return; }
-
     method flush {
         push @r_buffer => @w_buffer;
         @w_buffer = ();
@@ -211,7 +192,7 @@ class Env :isa(Term) {
     }
 
     method to_string {
-        sprintf 'ENV<%s>' => join '; ' => sort { $a cmp $b } keys $bindings->%*;
+        sprintf 'ENV<%s>' => ($bindings =~ /\(0x(.*)\)/);
     }
 }
 
@@ -256,27 +237,13 @@ class Eval::Expr :isa(Kontinue) {
 
         given (blessed $expr) {
             when ('Cons') {
-                my $next = Apply::Expr->new( args => $expr->tail, kont => $self->kont );
-
-                if (::OPTIMIZE_CALLS) {
-                    my $head;
-                    if ($expr->head isa Callable) {
-                        $head = $next->kontinue( $ctx, $expr->head );
-                    }
-                    elsif ($expr->head isa Sym) {
-                        my $call = $ctx->strand->lookup( $expr->head );
-                        return $ctx->strand->throw_error("Unable to find ".$expr->head->to_string." in Env", $self)
-                            if not defined $call;
-                        $head = $next->kontinue( $ctx, $call );
-                    }
-
-                    if (defined $head) {
-                        return $head->kontinue( $ctx ) if $head isa Eval::Args;
-                        return $head;
-                    }
-                }
-
-                return Eval::Expr->new( expr => $expr->head, kont => $next );
+                return Eval::Expr->new(
+                    expr => $expr->head,
+                    kont => Apply::Expr->new(
+                        args => $expr->tail,
+                        kont => $self->kont
+                    )
+                );
             }
             when ('Sym') {
                 my $value = $ctx->strand->lookup($expr);
@@ -300,23 +267,8 @@ class Apply::Expr :isa(Kontinue) {
 
     method kontinue ($ctx, $call) {
         $self->DEBUG($ctx, args => $args, '+call' => $call) if ::DEBUG;
-
         my $next = Apply::Call->new( call => $call, kont => $self->kont );
-
         return $ctx->strand->return_value( $args, $next ) if $call->is_operative;
-
-        if (::OPTIMIZE_CALLS) {
-            if ($args->is_nil) {
-                return $next;
-            } elsif ($args->tail->is_nil) {
-                return $ctx->strand->return_value( Cons->of( $args->head ), $next )
-                    if $args->head isa Literal;
-                return Eval::Expr->new( expr => $args->head, kont => $next );
-            } else {
-                return Eval::Args->new( rest => $args, kont => $next )
-            }
-        }
-
         return Eval::Args->new( rest => $args, kont => $next )
     }
 
@@ -327,21 +279,13 @@ class Apply::Expr :isa(Kontinue) {
 
 class Eval::Args :isa(Kontinue) {
     field $rest :param :reader;
-    field $done :param :reader = Nil->new;
+    field $done :param :reader = Nil->NIL;
 
     method kontinue ($ctx, $value=undef) {
         $self->DEBUG($ctx, rest => $rest, done => $done, '+value' => $value // '?') if ::DEBUG;
 
         $done = Cons->new( head => $value, tail => $done )
             if defined $value;
-
-        if (::OPTIMIZE_CALLS)  {
-            until ($rest->is_nil) {
-                last unless $rest->head isa Literal;
-                $done = Cons->new( head => $rest->head, tail => $done );
-                $rest = $rest->tail;
-            }
-        }
 
         # if no more left, return it
         return $ctx->strand->return_value( $done->reverse, $self->kont )
@@ -392,7 +336,7 @@ class Apply::Call :isa(Kontinue) {
     }
 
     method kontinue ($ctx, $args=undef) {
-        $args //= Nil->new;
+        $args //= Nil->NIL;
         $self->DEBUG($ctx, call => $call, '+args' => $args) if ::DEBUG;
 
         given (blessed $call) {
@@ -418,7 +362,7 @@ class Apply::Call :isa(Kontinue) {
     }
 
     method to_string {
-        return sprintf '%s[%s] > %s', __CLASS__, $call->name, $self->kont->to_string;
+        return sprintf '%s[%s] > %s', __CLASS__, $call->name->to_string, $self->kont->to_string;
     }
 }
 
@@ -439,7 +383,7 @@ class Scope::Enter :isa(Kontinue) {
 
 class Scope::Leave :isa(Kontinue) {
     method kontinue ($ctx, $result=undef) {
-        $result = Nil->new unless defined $result;
+        $result = Nil->NIL unless defined $result;
         $self->DEBUG($ctx, '+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
         return $ctx->strand->return_value( $result, $self->kont );
@@ -451,7 +395,7 @@ class Bind :isa(Kontinue) {
     method kontinue ($ctx, $value) {
         $self->DEBUG($ctx, 'name' => $name, '+value' => $value) if ::DEBUG;
         $ctx->strand->define( $name, $value );
-        return $ctx->strand->return_value( Nil->new, $self->kont );
+        return $ctx->strand->return_value( Nil->NIL, $self->kont );
     }
 
     method to_string {
@@ -571,7 +515,7 @@ class Chan::Write :isa(Kontinue) {
         }
 
         $channel->write( $value );
-        return $ctx->strand->return_value( Nil->new, $self->kont );
+        return $ctx->strand->return_value( Nil->NIL, $self->kont );
     }
 }
 
@@ -603,7 +547,7 @@ class Parser {
             given ($token) {
                 when (/^\"/)   { push $stack[-1]->@*, Str->new( raw => substr($token, 1, -1) ); }
                 when (/^\d+$/) { push $stack[-1]->@*, Num->new( raw => $token+0 ); }
-                when ('nil')   { push $stack[-1]->@*, Nil->new; }
+                when ('nil')   { push $stack[-1]->@*, Nil->NIL; }
                 when ('true')  { push $stack[-1]->@*, Bool->TRUE; }
                 when ('false') { push $stack[-1]->@*, Bool->FALSE; }
                 when ('\'(')   { push @stack => +[ Sym->new(ident => 'quote' ) ]; }
@@ -612,7 +556,7 @@ class Parser {
                     my $list = pop @stack;
                     push $stack[-1]->@*, (scalar $list->@* > 0)
                         ? Cons->of( $list->@* )
-                        : Nil->new;
+                        : Nil->NIL;
                 }
                 default {
                     push $stack[-1]->@*,
@@ -653,40 +597,6 @@ class Compiler {
     method compile ($env, $exprs) {
         my $kont  = Scope::Leave->new( kont => Halt->new );
         my @exprs = map { $self->link( $env, $_ ) } @$exprs;
-
-        if (::PRECOMPILE_DEFS) {
-            @exprs = map {
-                if ($_ isa Cons
-                &&  $_->head isa Callable
-                &&  $_->head->name->ident eq 'defun') {
-                    my ($name, $params, $body) = $_->tail->uncons;
-                    $env = $env->derive(
-                        $name->ident, Lambda->new(
-                            name   => $name,
-                            params => $params,
-                            body   => $body,
-                            env    => $env,
-                        )
-                    );
-                    $STATS{DEFINITIONS}->{COMPILETIME}++;
-                    ();
-                } elsif ($_ isa Cons
-                    &&  $_->head isa Callable
-                    &&  $_->head->name->ident eq 'let') {
-                    my ($name, $value) = $_->tail->uncons;
-                    if ($value isa Literal) {
-                        $env = $env->derive( $name->ident, $value );
-                        $STATS{DEFINITIONS}->{COMPILETIME}++;
-                        ();
-                    } else {
-                        $_;
-                    }
-                } else {
-                    $_;
-                }
-            } @exprs;
-        }
-
         foreach my $expr (reverse @exprs) {
             $kont = Eval::Expr->new(
                 expr => $expr,
@@ -725,12 +635,10 @@ class Strand {
     method current_env      { $self->current_scope->[-1] }
 
     method lookup ($sym) {
-        $STATS{LOOKUPS}++;
         $self->current_env->lookup( $sym )
     }
 
     method define ($name, $value) {
-        $STATS{DEFINITIONS}->{RUNTIME}++;
         push $self->current_scope->@* =>
             $self->current_env->derive( $name->ident, $value );
     }
@@ -880,13 +788,6 @@ class Strand {
     method step ($kont) {
         $steps++;
         given (blessed $kont) {
-            #say "STEP: ",$steps;
-            #say "ENV:";
-            #if ($self->current_scope) {
-            #    foreach my ($k, $v) ($self->current_env->DUMP) {
-            #        say sprintf '  > %-10s : %s ...', $k, substr(blessed $v ? $v->to_string : "WTF($v)", 0, 60);
-            #    }
-            #}
             when ('Return') {
                 push @trace => $kont->kont;
                 return $kont->kont->kontinue( $self->pid, $kont->value );
@@ -910,7 +811,7 @@ class Channel::TTY :isa(Channel) {
 
 ## -----------------------------------------------------------------------------
 
-class Runtime {
+class Host {
     field $root_env :reader;
     field $compiler :reader;
     field $parser   :reader;
@@ -1135,46 +1036,30 @@ class Runtime {
     }
 
     method run ($kont) {
+        my @done;
         my $main = $self->spawn( $kont );
-
         while (true) {
             my $pid = shift @pids;
-            #say "Flushing channel for ",$pid->to_string,' @ ',$pid->strand->steps;
-            #say '-' x 80;
             $pid->channel->flush if $pid->channel->has_pending;
-            #say "BEFORE: ",$pid->channel->DUMP;
-            #say '-' x 80;
-            #say "Running ... ",$pid->to_string,' @ ',$pid->strand->steps;
-            #say '-' x 80;
             my @trace  = $pid->strand->resume;
-            #say '-' x 80;
-            #say "AFTER: ",$pid->channel->DUMP;
-            #say '-' x 80;
-
             if ($trace[-1]->isa('Error')) {
-                say "Error ... ",$pid->to_string,' @ ',$pid->strand->steps;
                 warn $trace[-1]->error, "\n";
                 last unless @pids;
                 next;
             }
-
             if ($trace[-1]->isa('Halt')) {
-                say "Halting ... ",$pid->to_string,' @ ',$pid->strand->steps;
+                push @done => $pid;
                 last unless @pids;
             } else {
-                #say "Yielding ... ",$pid->to_string,' @ ',$pid->strand->steps;
                 push @pids => $pid;
             }
-            #say '=' x 80;
-            #my $x = <>;
         }
-
-        return $main->strand->trace;
+        return @done;
     }
 }
 
 
-my $host = Runtime->new;
+my $host = Host->new;
 
 my $exprs = $host->parse(q[
 
@@ -1188,7 +1073,7 @@ my $exprs = $host->parse(q[
         (if (== count 1)
             (do
                 (send $pong (list 0 ($$)))
-                (say (~ "Game Over at " kind " in " ($$)))
+                (say (~ "... Game Over at " kind " in " ($$)))
             )
             (do
                 (send $pong (list (- count 1) ($$)))
@@ -1205,34 +1090,37 @@ my $exprs = $host->parse(q[
 
 ]);
 
+say '-' x 160;
 say "PARSED:";
-say '    - ', $_ foreach @$exprs;
+say '-' x 160;
+say '    - ', $_->to_string foreach @$exprs;
 
 my $compiled = $host->compile( $host->root_env, $exprs );
 
+say '-' x 160;
 say "COMPILED:";
+say '-' x 160;
 foreach my ($name, $f) ($compiled->env->DUMP) {
     say '    - ', $name, ' := ', $f;
 }
 say '    + (main)';
 say '       ', $compiled;
 
-my @trace = $host->run( $compiled );
+say '-' x 160;
+say "RUNNING:";
+say '-' x 160;
+my @pids = $host->run( $compiled );
 
-say "STATS:";
-say "    STEPS : ", scalar @trace;
-say "  DEFINES : ", $STATS{DEFINES} // 0;
-say "  LOOKUPS : ", $STATS{LOOKUPS} // 0;
-
-if (TRACE) {
-    say "TRACE:";
-    say join "\n" => @trace;
-} else {
-    say "GOT:";
-    say '    - ', $trace[-1];
+say '-' x 160;
+say "COMPLETED:";
+say '-' x 160;
+foreach my $pid (@pids) {
+    say '  > ',$pid->DUMP,' ended with ',$pid->strand->prev_kont->to_string;
 }
 
+say '-' x 160;
 say "ALLOCATIONS:";
+say '-' x 160;
 say " +TERMS:";
 foreach my $type (sort { $ALLOCATIONS{TERMS}->{$b} <=> $ALLOCATIONS{TERMS}->{$a} } keys $ALLOCATIONS{TERMS}->%*) {
     say sprintf '%16s : %d' => $type, $ALLOCATIONS{TERMS}->{$type};
@@ -1245,38 +1133,9 @@ say " +MISC:";
 foreach my $type (sort { $ALLOCATIONS{MISC}->{$b} <=> $ALLOCATIONS{MISC}->{$a} } keys $ALLOCATIONS{MISC}->%*) {
     say sprintf '%16s : %d' => $type, $ALLOCATIONS{MISC}->{$type};
 }
+say '-' x 160;
 
 
-__DATA__
-
-
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(defun fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 2)) (fib (- n 1)))))
-
-(say (~ "FACT/FIB=" (fact (fib 6))))
-
-
-
-(defun echo ()
-    (do
-        (let msg (recv))
-        (say (~ "GOT: " msg " in " ($$)))
-        (if (eq msg ":q") ()
-            (yield (echo)))))
-
-(let $echo1 (spawn (echo)))
-(let $echo2 (spawn (echo)))
-
-(send $echo2 "Hello World")
-(send $echo1 "Hello World")
-(send $echo2 "Goodbye World")
-(send $echo1 ":q")
-(send $echo2 ":q")
 
 
 
