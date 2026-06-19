@@ -432,7 +432,7 @@ class Scope::Enter :isa(Kontinue) {
 
 class Scope::Leave :isa(Kontinue) {
     method kontinue ($ctx, $result=undef) {
-        $result = Nil->new;
+        $result = Nil->new unless defined $result;
         $self->DEBUG($ctx, '+result' => $result) if ::DEBUG;
         $ctx->strand->leave_scope;
         return $ctx->strand->return_value( $result, $self->kont );
