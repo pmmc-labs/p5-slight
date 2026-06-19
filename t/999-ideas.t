@@ -860,19 +860,19 @@ class Host {
                 'gt' => Native->new( name => 'gt', proc => sub ($n, $m) { $n->raw gt $m->raw ? Bool->TRUE : Bool->FALSE }),
                 'lt' => Native->new( name => 'lt', proc => sub ($n, $m) { $n->raw lt $m->raw ? Bool->TRUE : Bool->FALSE }),
 
-                'atom?'     => Native->new( name => 'atom?',     proc => sub ($n, $m) { $n isa Literal  ? Bool->TRUE : Bool->FALSE }),
-                'list?'     => Native->new( name => 'bool?',     proc => sub ($n, $m) { $n isa List     ? Bool->TRUE : Bool->FALSE }),
-                'callable?' => Native->new( name => 'callable?', proc => sub ($n, $m) { $n isa Callable ? Bool->TRUE : Bool->FALSE }),
-                'nil?'      => Native->new( name => 'nil?',      proc => sub ($n, $m) { $n isa Nil      ? Bool->TRUE : Bool->FALSE }),
-                'num?'      => Native->new( name => 'num?',      proc => sub ($n, $m) { $n isa Num      ? Bool->TRUE : Bool->FALSE }),
-                'str?'      => Native->new( name => 'str?',      proc => sub ($n, $m) { $n isa Str      ? Bool->TRUE : Bool->FALSE }),
-                'bool?'     => Native->new( name => 'bool?',     proc => sub ($n, $m) { $n isa Bool     ? Bool->TRUE : Bool->FALSE }),
-                'tag?'      => Native->new( name => 'tag?',      proc => sub ($n, $m) { $n isa Tag      ? Bool->TRUE : Bool->FALSE }),
-                'sym?'      => Native->new( name => 'sym?',      proc => sub ($n, $m) { $n isa Sym      ? Bool->TRUE : Bool->FALSE }),
-                'native?'   => Native->new( name => 'native?',   proc => sub ($n, $m) { $n isa Native   ? Bool->TRUE : Bool->FALSE }),
-                'lambda?'   => Native->new( name => 'lambda?',   proc => sub ($n, $m) { $n isa Lambda   ? Bool->TRUE : Bool->FALSE }),
-                'channel?'  => Native->new( name => 'channel?',  proc => sub ($n, $m) { $n isa Channel  ? Bool->TRUE : Bool->FALSE }),
-                'pid?'      => Native->new( name => 'pid?',      proc => sub ($n, $m) { $n isa PID      ? Bool->TRUE : Bool->FALSE }),
+                'atom?'     => Native->new( name => 'atom?',     proc => sub ($n) { $n isa Literal  ? Bool->TRUE : Bool->FALSE }),
+                'list?'     => Native->new( name => 'list?',     proc => sub ($n) { $n isa List     ? Bool->TRUE : Bool->FALSE }),
+                'callable?' => Native->new( name => 'callable?', proc => sub ($n) { $n isa Callable ? Bool->TRUE : Bool->FALSE }),
+                'nil?'      => Native->new( name => 'nil?',      proc => sub ($n) { $n isa Nil      ? Bool->TRUE : Bool->FALSE }),
+                'num?'      => Native->new( name => 'num?',      proc => sub ($n) { $n isa Num      ? Bool->TRUE : Bool->FALSE }),
+                'str?'      => Native->new( name => 'str?',      proc => sub ($n) { $n isa Str      ? Bool->TRUE : Bool->FALSE }),
+                'bool?'     => Native->new( name => 'bool?',     proc => sub ($n) { $n isa Bool     ? Bool->TRUE : Bool->FALSE }),
+                'tag?'      => Native->new( name => 'tag?',      proc => sub ($n) { $n isa Tag      ? Bool->TRUE : Bool->FALSE }),
+                'sym?'      => Native->new( name => 'sym?',      proc => sub ($n) { $n isa Sym      ? Bool->TRUE : Bool->FALSE }),
+                'native?'   => Native->new( name => 'native?',   proc => sub ($n) { $n isa Native   ? Bool->TRUE : Bool->FALSE }),
+                'lambda?'   => Native->new( name => 'lambda?',   proc => sub ($n) { $n isa Lambda   ? Bool->TRUE : Bool->FALSE }),
+                'channel?'  => Native->new( name => 'channel?',  proc => sub ($n) { $n isa Channel  ? Bool->TRUE : Bool->FALSE }),
+                'pid?'      => Native->new( name => 'pid?',      proc => sub ($n) { $n isa PID      ? Bool->TRUE : Bool->FALSE }),
 
                 'list'  => Native->new( name => 'list',  proc => sub (@args)  { Cons->of( @args ) }),
                 'cons'  => Native->new( name => 'cons',  proc => sub ($h, $t) { Cons->new( head => $h, tail => $t ) }),
@@ -1053,30 +1053,11 @@ my $host = Host->new;
 
 my $exprs = $host->parse(q[
 
-(defun PingPong (kind) (do
-    (let msg (recv))
-    (let count (car  msg))
-    (let $pong (cdar msg))
-    (say (~ "Got " count " from " $pong " in " ($$)))
-    (if (== count 0)
-        (say (~ "... Game Over at " kind " in " ($$)))
-        (if (== count 1)
-            (do
-                (send $pong (list 0 ($$)))
-                (say (~ "... Game Over at " kind " in " ($$)))
-            )
-            (do
-                (send $pong (list (- count 1) ($$)))
-                (yield (PingPong kind))
-            )
-        )
-    )
-))
+(defun length (l)
+    (if (nil? l) 0
+        (+ 1 (length (cdr l)))))
 
-(let $ping (spawn (PingPong :ping)))
-(let $pong (spawn (PingPong :pong)))
-
-(send $ping (list 10 $pong))
+(length (list 1 2 3 4 5))
 
 ]);
 
@@ -1126,7 +1107,32 @@ foreach my $type (sort { $ALLOCATIONS{MISC}->{$b} <=> $ALLOCATIONS{MISC}->{$a} }
 say '-' x 160;
 
 
+__END__
 
+(defun PingPong (kind) (do
+    (let msg (recv))
+    (let count (car  msg))
+    (let $pong (cdar msg))
+    (say (~ "Got " count " from " $pong " in " ($$)))
+    (if (== count 0)
+        (say (~ "... Game Over at " kind " in " ($$)))
+        (if (== count 1)
+            (do
+                (send $pong (list 0 ($$)))
+                (say (~ "... Game Over at " kind " in " ($$)))
+            )
+            (do
+                (send $pong (list (- count 1) ($$)))
+                (yield (PingPong kind))
+            )
+        )
+    )
+))
+
+(let $ping (spawn (PingPong :ping)))
+(let $pong (spawn (PingPong :pong)))
+
+(send $ping (list 10 $pong))
 
 
 
