@@ -3,6 +3,7 @@ use v5.42;
 use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
+use Test::More;
 
 ## -----------------------------------------------------------------------------
 
@@ -11,6 +12,10 @@ use constant DEBUG => $ENV{DEBUG} // 0;
 # track allocation for informational
 # purposes only, this is a hack ;)
 our %ALLOCATIONS = ( TERMS => +{}, KONTS => +{}, MISC  => +{} );
+
+# this is for debugging stuff
+use Term::ReadKey ();
+our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
 
 ## -----------------------------------------------------------------------------
 ## Terms
@@ -100,6 +105,7 @@ class Bool :isa(Literal) {
 }
 
 class Callable :isa(Literal) {
+    method has_name       { ... }
     method is_operative   { ... }
     method is_applicative { ... }
 }
@@ -123,6 +129,8 @@ class Native :isa(Callable) {
     field $proc :param :reader;
 
     ADJUST { $name = Sym->new(ident => $name) }
+
+    method has_name { defined $name }
 
     field $is_operative :param :reader = false;
     method is_applicative { !$is_operative }
@@ -216,11 +224,11 @@ class Kontinue {
     }
 
     method DEBUG ($ctx, @args) {
-        use Term::ReadKey ();
-        state $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
-
         say '-' x $WIDTH;
-        say sprintf '=> %-12s : %s' => __CLASS__, substr($self->kont // '!!', 0, ($WIDTH - 20));
+        say sprintf '=> %-12s : %s' => __CLASS__,
+            substr((
+                defined $self->kont ? $self->kont->to_string : undef
+            ) // '!!', 0, ($WIDTH - 20));
         say '-' x $WIDTH;
         foreach my ($name, $arg) (@args) {
             say sprintf '%15s : %s' =>
@@ -352,8 +360,10 @@ class Apply::Call :isa(Kontinue) {
                 }
             }
             when ('Lambda') {
+                my $params = $self->bind_params( $ctx, $call, $args );
+                return $params if $params isa Error;
                 return $ctx->strand->wrap_call(
-                    $self->bind_params( $ctx, $call, $args ),
+                    $params,
                     $call,
                     $self->kont
                 )
@@ -365,7 +375,7 @@ class Apply::Call :isa(Kontinue) {
     }
 
     method to_string {
-        return sprintf '%s[%s] > %s', __CLASS__, $call->name->to_string, $self->kont->to_string;
+        return sprintf '%s[%s] > %s', __CLASS__, ($call->has_name ? $call->name->to_string : $call->to_string), $self->kont->to_string;
     }
 }
 
@@ -1054,49 +1064,220 @@ class Host {
     }
 }
 
+## -----------------------------------------------------------------------------
+
+my %SOURCES = (
+    'fact'  => q[
+        (defun fact (n)
+            (if (== n 0) 1
+                (* n (fact (- n 1)))))
+    ],
+    'fib' => q[
+        (defun fib (n)
+            (if (< n 2) n
+                (+ (fib (- n 2)) (fib (- n 1)))))
+    ],
+    'length' => q[
+        (defun length (list)
+            (if (nil? list) 0
+                (+ 1 (length (cdr list)))))
+    ],
+    'length-iter' => q[
+        (defun length-iter (list count)
+            (if (nil? list) count
+                (length-iter (cdr list) (+ count 1))))
+    ],
+    'tail-call-demo' => q[
+        (defun tail-call-demo (n)
+            (if (== n 0) 0
+               (tail-call-demo (- n 1))))
+    ],
+    'ping-pong' => q[
+        (defun PingPong (kind) (do
+            (let msg (recv))
+            (let count (car  msg))
+            (let $pong (cadr msg))
+            (say (~ "Got " count " from " $pong " in " ($$)))
+            (if (== count 0)
+                (say (~ "... Game Over at " kind " in " ($$)))
+                (if (== count 1)
+                    (do
+                        (send $pong (list 0 ($$)))
+                        (say (~ "... Game Over at " kind " in " ($$)))
+                    )
+                    (do
+                        (send $pong (list (- count 1) ($$)))
+                        (yield (PingPong kind))
+                    )))))
+    ],
+    '--test' => q[
+        (defun adder (n m) (+ n m))
+        (defun double (n) (+ n n))
+    ],
+);
+
+my %TESTS = (
+    'fact'           => q[ (fact 6) ],
+    'fib'            => q[ (fib 6) ],
+    'length'         => q[ (length (list 1 2 3 4 5)) ],
+    'length-iter'    => q[ (length-iter (list 1 2 3 4 5) 0) ],
+    'tail-call-demo' => q[ (tail-call-demo 10) ],
+    'ping-pong'      => q[
+        (let $ping (spawn (PingPong :ping)))
+        (let $pong (spawn (PingPong :pong)))
+        (send $ping (list 10 $pong))
+    ],
+    '--test' => q[
+        (list
+            30
+            (+ 10 20)
+            (+ (* 2 5) 20)
+            (+ 10 (* 4 5))
+            (+ (* 2 5) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
+            (adder 10 20)
+            (adder (double 5) 20)
+            (adder 10 (* (double 2) 5))
+            (adder (fib 6) 22)
+            (adder (fib 8) (+ 1 (double 4)))
+            (- (fact 6) (+ (* (fact 3) 100) 90))
+            ((lambda (n m) (+ n m)) 10 20)
+            ((lambda (f n m) (f n m)) + 10 20)
+            (+ (length (list 0 1 2 3 4 5 6 7 8 9)))
+        )
+    ],
+);
+
+my %ASSERTS = (
+    'fact'           => sub ($pids) { is($pids->[0]->strand->prev_kont->result->raw, 720, '... fact demo got expected 720') },
+    'fib'            => sub ($pids) { is($pids->[0]->strand->prev_kont->result->raw, 8,   '... fib demo got expected 8') },
+    'length'         => sub ($pids) { is($pids->[0]->strand->prev_kont->result->raw, 5,   '... length demo got expected 5') },
+    'length-iter'    => sub ($pids) { is($pids->[0]->strand->prev_kont->result->raw, 5,   '... length-iter demo got expected 5') },
+    'tail-call-demo' => sub ($pids) { is($pids->[0]->strand->prev_kont->result->raw, 0,   '... tail-call-demo demo got expected 0') },
+    'ping-pong'      => sub ($pids) {
+        is(scalar(@$pids), 3, '... got the expected number of PIDs');
+        isa_ok($_, 'PID') foreach @$pids;
+        my ($main, $pong, $ping) = @$pids;
+
+        my $pong_kont = ($pong->strand->trace)[1];
+        isa_ok($pong_kont, 'Eval::Expr');
+        isa_ok($pong_kont->expr, 'Cons');
+        isa_ok($pong_kont->expr->head, 'Sym');
+        is($pong_kont->expr->head->ident, 'PingPong', '... got PingPong');
+        isa_ok($pong_kont->expr->tail, 'Cons');
+        isa_ok($pong_kont->expr->tail->head, 'Tag');
+        is($pong_kont->expr->tail->head->ident, ':pong', '... got :pong');
+
+        my $ping_kont = ($pong->strand->trace)[1];
+        isa_ok($ping_kont, 'Eval::Expr');
+        isa_ok($ping_kont->expr, 'Cons');
+        isa_ok($ping_kont->expr->head, 'Sym');
+        is($ping_kont->expr->head->ident, 'PingPong', '... got PingPong');
+        isa_ok($ping_kont->expr->tail, 'Cons');
+        isa_ok($ping_kont->expr->tail->head, 'Tag');
+        is($ping_kont->expr->tail->head->ident, ':pong', '... got :ping');
+
+    },
+    '--test' => sub ($pids) {
+        my $result = $pids->[0]->strand->prev_kont->result;
+        return fail("Expected cons list for results of --test")
+            unless $result isa Cons;
+
+        my sub unpack_results ($r) {
+            return $r->raw if $r isa Literal;
+            my @out;
+            until ($r->is_nil) {
+                my $got = $r->head;
+                if ($got isa Literal) {
+                    push @out => $got->raw;
+                } elsif ($got isa List) {
+                    push @out => [ map { __SUB__->($_) } $got->uncons ];
+                } else {
+                    die "NOPE!"
+                }
+                $r = $r->tail;
+            }
+            return @out;
+        }
+
+        my @got = unpack_results( $result );
+        my @expected = (
+            ((30) x 15),
+        );
+
+        foreach my $expected (@expected) {
+            my $got = shift @got;
+            if (ref $expected) {
+                is_deeply($got, $expected, "... expected [".(join ', ', @$expected)."] - got [".(join ', ', @$got)."]");
+            } else {
+                is($got, $expected, "... expected $expected - got $got");
+            }
+        }
+
+        ok(scalar @got == 0, '... we should be out of values to expect');
+
+        return true;
+    }
+);
+
+## -----------------------------------------------------------------------------
+
+my $WHICH  = $ARGV[0] // '--test';
+my $SOURCE = join "\n\n", $SOURCES{ $WHICH } // $WHICH, $TESTS{ $WHICH } // ();
+
+if ($WHICH eq '--test') {
+    $SOURCE = join "\n\n" => @SOURCES{qw[ fib fact length length-iter ]}, $SOURCE;
+}
+
+say '=' x $WIDTH;
+say "SOURCE:";
+say '=' x $WIDTH;
+say $SOURCE;
 
 my $host = Host->new;
 
-my $exprs = $host->parse(q[
-
-'(a)
-
-]);
-
-say '-' x 160;
+say '=' x $WIDTH;
 say "PARSED:";
-say '-' x 160;
+say '=' x $WIDTH;
+my $exprs = $host->parse($SOURCE);
 say '    - ', $_->to_string foreach @$exprs;
 
-my $compiled = $host->compile( $host->root_env, $exprs );
-
-say '-' x 160;
+say '=' x $WIDTH;
 say "COMPILED:";
-say '-' x 160;
-foreach my ($name, $f) ($compiled->env->DUMP) {
-    say '    - ', $name, ' := ', $f;
-}
-say '    + (main)';
-say '       ', $compiled;
+say '=' x $WIDTH;
+my $compiled = $host->compile( $host->root_env, $exprs );
+say '    +  ', $compiled;
 
-say '-' x 160;
+say '=' x $WIDTH;
 say "RUNNING:";
-say '-' x 160;
+say '=' x $WIDTH;
 my @pids = $host->run( $compiled );
 
-say '-' x 160;
+die "Expected some PIDs here!" unless @pids;
+
+say '=' x $WIDTH;
+say "ASSERTION:";
+say '=' x $WIDTH;
+if (($ASSERTS{ $WHICH } // sub ($) { true })->(\@pids)) {
+    say "   + ASSERTION PASSED FOR $WHICH";
+} else {
+    say "   - ASSERTION FAILED FOR $WHICH";
+}
+
+say '=' x $WIDTH;
 say "COMPLETED:";
-say '-' x 160;
+say '=' x $WIDTH;
 foreach my $pid (@pids) {
-    say '  > ',$pid->DUMP,' ended with ',$pid->strand->prev_kont->to_string;
+    say '  > ',$pid->DUMP,' ended in '.$pid->strand->steps.' steps with ',$pid->strand->prev_kont->to_string;
     say join "\n" => map {
         sprintf '[%s]' => join ', ' => map { $_->to_string } @$_
     } $pid->strand->envs;
 }
 
-say '-' x 160;
+say '=' x $WIDTH;
 say "ALLOCATIONS:";
-say '-' x 160;
+say '=' x $WIDTH;
 say " +TERMS:";
 foreach my $type (sort { $ALLOCATIONS{TERMS}->{$b} <=> $ALLOCATIONS{TERMS}->{$a} } keys $ALLOCATIONS{TERMS}->%*) {
     say sprintf '%16s : %d' => $type, $ALLOCATIONS{TERMS}->{$type};
@@ -1109,86 +1290,9 @@ say " +MISC:";
 foreach my $type (sort { $ALLOCATIONS{MISC}->{$b} <=> $ALLOCATIONS{MISC}->{$a} } keys $ALLOCATIONS{MISC}->%*) {
     say sprintf '%16s : %d' => $type, $ALLOCATIONS{MISC}->{$type};
 }
-say '-' x 160;
+say '=' x $WIDTH;
 
 
-__END__
---------------------------------------------------------------------------------
-
-(defun fact (n)
-    (if (== n 0) 1
-        (* n (fact (- n 1)))))
-
-(say (fact 6))
-
---------------------------------------------------------------------------------
-
-(defun fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 2)) (fib (- n 1)))))
-
-(say (fib 6))
-
---------------------------------------------------------------------------------
-
-(defun length (list)
-    (if (nil? list) 0
-        (+ 1 (length (cdr list)))))
-
-(say (length (list 0 1 2 3 4 5 6 7 8 9)))
-
-;; tail recursive version ...
-
-(defun length (list count)
-    (if (nil? list) count
-        (length (cdr list) (+ count 1))))
-
-(say (length (list 0 1 2 3 4 5 6 7 8 9) 0))
-
---------------------------------------------------------------------------------
-
-(defun tail-call-demo (n)
-    (if (== n 0) 0
-       (tail-call-demo (- n 1))))
-
-(say (tail-call-demo 10))
-
---------------------------------------------------------------------------------
-
-(defun PingPong (kind) (do
-    (let msg (recv))
-    (let count (car  msg))
-    (let $pong (cadr msg))
-    (say (~ "Got " count " from " $pong " in " ($$)))
-    (if (== count 0)
-        (say (~ "... Game Over at " kind " in " ($$)))
-        (if (== count 1)
-            (do
-                (send $pong (list 0 ($$)))
-                (say (~ "... Game Over at " kind " in " ($$)))
-            )
-            (do
-                (send $pong (list (- count 1) ($$)))
-                (yield (PingPong kind))
-            )
-        )
-    )
-))
-
-(let $ping (spawn (PingPong :ping)))
-(let $pong (spawn (PingPong :pong)))
-
-(send $ping (list 10 $pong))
-
---------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
+pass('... ran successfully');
+done_testing;
 
