@@ -1121,6 +1121,16 @@ my %SOURCES = (
                 (cons e nil)
                 (cons b (range (+ b 1) e))))
 
+        (defun map (f lst)
+            (if (nil? lst) ()
+                (cons (f (car lst)) (map f (cdr lst)))))
+
+        (defun grep (f lst)
+            (if (nil? lst) ()
+                (if (f (car lst))
+                    (cons (car lst) (grep f (cdr lst)))
+                    (grep f (cdr lst)))))
+
         (defun reduce (acc f lst)
             (if (nil? lst) acc
                 (reduce (f (car lst) acc) f (cdr lst))))
@@ -1131,21 +1141,19 @@ my %SOURCES = (
         (defun product (lst)
             (reduce 1 (lambda (n acc) (* acc n)) lst))
 
+        (defun Calculator (reply-to)
+            (do
+                (let op (recv))
+                (if (native? op)
+                (do
+                    (let n  (recv))
+                    (let m  (recv))
+                    (send reply-to (op n m))
+                    (yield (Calculator reply-to))
+                ) ())))
+
     ],
 );
-
-=pod
-
-;; Factorial
-(let @input    (list 0 1 2 3  4   5   6    7     8      9      10       11))
-(let @expected (list 1 1 2 6 24 120 720 5040 40320 362880 3628800 39916800))
-
-;; Fibonacci
-(let @input    (list 0 1 2 3 4 5 6  7  8  9 10 11))
-(let @expected (list 0 1 1 2 3 5 8 13 21 34 55 89))
-
-=cut
-
 
 my %TESTS = (
     'fact'           => q[ (fact 6) ],
@@ -1159,6 +1167,10 @@ my %TESTS = (
         (send $ping (list 10 $pong))
     ],
     '--test' => q[
+        (let reply-to ($$))
+        (let calc (spawn (Calculator reply-to)))
+
+        ;; many silly ways to calculate 30
         (list
             30
             (+ 10 20)
@@ -1181,6 +1193,33 @@ my %TESTS = (
             (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
             (sum (list 4 (fib 8) (- (fact 3) 1)))
             (+ (sum (range 0 (fib 6))) (- 2 8))
+            (sum (grep
+                    (lambda (x) (>= x 10))
+                    (list 0 2 10 4 7 20 3 1)))
+            (sum (map
+                    (lambda (x) (if (<= x 20) x 0))
+                    (list 100 25 10 411 75 20 35 1000)))
+            (do
+                (send ($$) 10)
+                (send ($$) 20)
+                (let x (recv))
+                (let y (recv))
+                (+ x y))
+            (do
+                (send calc +)
+                (send calc 10)
+                (send calc 20)
+                (recv))
+            (do
+                (send calc *)
+                (send calc 2)
+                (send calc 5)
+                (send calc +)
+                (send calc (recv))
+                (send calc 20)
+                (let result (recv))
+                (send calc :exit)
+                result)
         )
     ],
 );
@@ -1216,8 +1255,10 @@ my %ASSERTS = (
 
     },
     '--test' => sub ($pids) {
-        my $result = $pids->[0]->strand->prev_kont->result;
-        return fail("Expected cons list for results of --test")
+        my ($pid) = grep { $_->id == 0 } @$pids;
+
+        my $result = $pid->strand->prev_kont->result;
+        return fail("Expected cons list for results of --test not ".$result->to_string)
             unless $result isa Cons;
 
         my sub unpack_results ($r) {
