@@ -585,10 +585,14 @@ class Compiler {
         $self->compile_block($env, $exprs, Halt->new);
     }
 
+    my sub optimize_tail_call ($kont, $depth=1) {
+        return __SUB__->( $kont->kont, $depth + $kont->depth )
+            if $kont isa Scope::Leave;
+        return Scope::Leave->new( kont => $kont, depth => $depth )
+    }
+
     method compile_block ($env, $exprs, $kont) {
-        my $next = $kont isa Scope::Leave # NOTE: unify this TCO stuff with wrap-call
-                    ? Scope::Leave->new( kont => $kont->kont, depth => $kont->depth + 1 )
-                    : Scope::Leave->new( kont => $kont );
+        my $next = optimize_tail_call( $kont );
         foreach my $expr (reverse @$exprs) {
             $next = Eval::Expr->new(
                 expr => $expr,
@@ -604,9 +608,7 @@ class Compiler {
             env  => $env,
             kont => Eval::Expr->new(
                 expr => $call->body,
-                kont => $kont isa Scope::Leave # NOTE: unify this TCO stuff with compile-block
-                    ? Scope::Leave->new( kont => $kont->kont, depth => $kont->depth + 1 )
-                    : Scope::Leave->new( kont => $kont )
+                kont => optimize_tail_call( $kont )
             )
         )
     }
@@ -1056,30 +1058,12 @@ my $host = Host->new;
 
 my $exprs = $host->parse(q[
 
-(defun PingPong (kind) (do
-    (let msg (recv))
-    (let count (car  msg))
-    (let $pong (cdar msg))
-    (say (~ "Got " count " from " $pong " in " ($$)))
-    (if (== count 0)
-        (say (~ "... Game Over at " kind " in " ($$)))
-        (if (== count 1)
-            (do
-                (send $pong (list 0 ($$)))
-                (say (~ "... Game Over at " kind " in " ($$)))
-            )
-            (do
-                (send $pong (list (- count 1) ($$)))
-                (yield (PingPong kind))
-            )
-        )
-    )
-))
+(defun length (list count)
+    (if (nil? list) count
+        (length (cdr list) (+ count 1))))
 
-(let $ping (spawn (PingPong :ping)))
-(let $pong (spawn (PingPong :pong)))
+(say (length (list 0 1 2 3 4 5 6 7 8 9) 0))
 
-(send $ping (list 10 $pong))
 
 ]);
 
@@ -1156,6 +1140,14 @@ __END__
         (+ 1 (length (cdr list)))))
 
 (say (length (list 0 1 2 3 4 5 6 7 8 9)))
+
+;; tail recursive version ...
+
+(defun length (list count)
+    (if (nil? list) count
+        (length (cdr list) (+ count 1))))
+
+(say (length (list 0 1 2 3 4 5 6 7 8 9) 0))
 
 --------------------------------------------------------------------------------
 
