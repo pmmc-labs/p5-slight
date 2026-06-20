@@ -1111,10 +1111,41 @@ my %SOURCES = (
                     )))))
     ],
     '--test' => q[
+
         (defun adder (n m) (+ n m))
-        (defun double (n) (+ n n))
+
+        (defun double (n) (adder n n))
+
+        (defun range (b e)
+            (if (== b e)
+                (cons e nil)
+                (cons b (range (+ b 1) e))))
+
+        (defun reduce (acc f lst)
+            (if (nil? lst) acc
+                (reduce (f (car lst) acc) f (cdr lst))))
+
+        (defun sum (lst)
+            (reduce 0 (lambda (n acc) (+ acc n)) lst))
+
+        (defun product (lst)
+            (reduce 1 (lambda (n acc) (* acc n)) lst))
+
     ],
 );
+
+=pod
+
+;; Factorial
+(let @input    (list 0 1 2 3  4   5   6    7     8      9      10       11))
+(let @expected (list 1 1 2 6 24 120 720 5040 40320 362880 3628800 39916800))
+
+;; Fibonacci
+(let @input    (list 0 1 2 3 4 5 6  7  8  9 10 11))
+(let @expected (list 0 1 1 2 3 5 8 13 21 34 55 89))
+
+=cut
+
 
 my %TESTS = (
     'fact'           => q[ (fact 6) ],
@@ -1144,7 +1175,12 @@ my %TESTS = (
             (- (fact 6) (+ (* (fact 3) 100) 90))
             ((lambda (n m) (+ n m)) 10 20)
             ((lambda (f n m) (f n m)) + 10 20)
-            (+ (length (list 0 1 2 3 4 5 6 7 8 9)))
+            (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
+            (length (range 1 30))
+            (+ (length (range 1 10)) (length (range 1 (* 4 5))))
+            (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
+            (sum (list 4 (fib 8) (- (fact 3) 1)))
+            (+ (sum (range 0 (fib 6))) (- 2 8))
         )
     ],
 );
@@ -1201,10 +1237,8 @@ my %ASSERTS = (
             return @out;
         }
 
-        my @got = unpack_results( $result );
-        my @expected = (
-            ((30) x 15),
-        );
+        my @got      = unpack_results( $result );
+        my @expected = (30) x (scalar @got);
 
         foreach my $expected (@expected) {
             my $got = shift @got;
