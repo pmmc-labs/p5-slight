@@ -38,13 +38,17 @@ class Tag :isa(Term) {
     method to_string { $ident }
 }
 
-class List :isa(Term) {}
+class List :isa(Term) {
+    method uncons  { ... }
+    method reverse { ... }
+}
 
 class Nil :isa(List) {
     sub NIL { state $t = Nil->new }
     method to_string { '()' }
-    method is_nil { true }
-    method uncons { () }
+    method is_nil  { true }
+    method uncons  { () }
+    method reverse { $self }
 }
 
 class Cons :isa(List) {
@@ -546,7 +550,7 @@ class Parser {
             my $token = shift @tokens;
             if ($token =~ /^\'[^\(]/) {
                 $token =~ s/^\'//;
-                push @stack => +[ Sym->new(ident => 'quote' ) ];
+                push @stack => +[ Sym->new( ident => 'quote' ) ];
                 unshift @tokens => ')';
             }
             given ($token) {
@@ -555,7 +559,7 @@ class Parser {
                 when ('nil')   { push $stack[-1]->@*, Nil->NIL; }
                 when ('true')  { push $stack[-1]->@*, Bool->TRUE; }
                 when ('false') { push $stack[-1]->@*, Bool->FALSE; }
-                when ('\'(')   { push @stack => +[ Sym->new(ident => 'quote' ) ]; }
+                when ('\'(')   { push @stack => +[ Sym->new( ident => 'quote' ) ]; }
                 when ('(')     { push @stack => +[]; }
                 when (')')     {
                     my $list = pop @stack;
@@ -883,12 +887,9 @@ class Host {
                 'cons'  => Native->new( name => 'cons',  proc => sub ($h, $t) { Cons->new( head => $h, tail => $t ) }),
                 'car'   => Native->new( name => 'car',   proc => sub ($list)  { $list->head }),
                 'cdr'   => Native->new( name => 'cdr',   proc => sub ($list)  { $list->tail }),
+                'cadr'  => Native->new( name => 'cadr',  proc => sub ($list)  { $list->tail->head }),
                 'caar'  => Native->new( name => 'caar',  proc => sub ($list)  { $list->head->head }),
-                'cadr'  => Native->new( name => 'cadr',  proc => sub ($list)  { $list->head->tail }),
-                'cdar'  => Native->new( name => 'cdar',  proc => sub ($list)  { $list->tail->head }),
-                'cadar' => Native->new( name => 'cadar', proc => sub ($list)  { $list->head->tail->head }),
-                'caddr' => Native->new( name => 'caddr', proc => sub ($list)  { $list->head->tail->tail }),
-                'cddar' => Native->new( name => 'cddar', proc => sub ($list)  { $list->tail->tail->head }),
+                'cdar'  => Native->new( name => 'cdar',  proc => sub ($list)  { $list->head->tail }),
 
                 'quote' => Native->new(
                     name => 'quote',
@@ -1058,12 +1059,7 @@ my $host = Host->new;
 
 my $exprs = $host->parse(q[
 
-(defun length (list count)
-    (if (nil? list) count
-        (length (cdr list) (+ count 1))))
-
-(say (length (list 0 1 2 3 4 5 6 7 8 9) 0))
-
+'(a)
 
 ]);
 
@@ -1162,7 +1158,7 @@ __END__
 (defun PingPong (kind) (do
     (let msg (recv))
     (let count (car  msg))
-    (let $pong (cdar msg))
+    (let $pong (cadr msg))
     (say (~ "Got " count " from " $pong " in " ($$)))
     (if (== count 0)
         (say (~ "... Game Over at " kind " in " ($$)))
