@@ -1046,17 +1046,29 @@ class Host {
         my $main = $self->spawn( $kont );
         while (true) {
             my $pid = shift @pids;
+            say ">" x $WIDTH if ::DEBUG;
+            say ">> RESUME ".$pid->DUMP if ::DEBUG;
+            say ">" x $WIDTH if ::DEBUG;
             $pid->channel->flush if $pid->channel->has_pending;
             my @trace  = $pid->strand->resume;
             if ($trace[-1]->isa('Error')) {
+                say "!" x $WIDTH if ::DEBUG;
+                say "!! ERRORED ".$pid->DUMP if ::DEBUG;
+                say "!" x $WIDTH if ::DEBUG;
                 warn $trace[-1]->error, "\n";
                 last unless @pids;
                 next;
             }
             if ($trace[-1]->isa('Halt')) {
+                say "*" x $WIDTH if ::DEBUG;
+                say "** HALTING ".$pid->DUMP if ::DEBUG;
+                say "*" x $WIDTH if ::DEBUG;
                 push @done => $pid;
                 last unless @pids;
             } else {
+                say "<" x $WIDTH if ::DEBUG;
+                say "<< YIELD ".$pid->DUMP if ::DEBUG;
+                say "<" x $WIDTH if ::DEBUG;
                 push @pids => $pid;
             }
         }
