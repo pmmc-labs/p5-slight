@@ -717,15 +717,12 @@ class Strand {
     field $enter :param :reader;
     field $pid   :param :reader;
 
-    field $curr_kont;
-    field $prev_kont;
-    field $returned;
-
-    field $halted :reader = false;
-    field $steps  :reader = 0;
+    field @trace  :reader;
+    field $steps  :reader;
     field @envs   :reader;
 
     ADJUST {
+        $steps = 0;
         $pid = PID->new( id => $pid, strand => $self, channel => Channel->new );
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
@@ -738,30 +735,32 @@ class Strand {
 
     ## -------------------------------------------------------------------------
 
-    method prev_kont { defined $prev_kont ? $prev_kont->kont : undef }
-    method next_kont { defined $curr_kont ? $curr_kont->kont : undef }
+    method prev_kont { $trace[-1] }
+    method next_kont { $trace[-1]->kont }
 
-    method run { $self->resume }
+    method run { $self->execute( $enter ) }
+
+    method execute ($kont) {
+        while (defined $kont) {
+            push @trace => $kont;
+            $kont = $self->step($kont);
+        }
+        return @trace;
+    }
 
     method resume {
-        return undef if $halted;     # do not resume if halted
-        $curr_kont //= $enter; # start at enter
-        # otherwise pick up where we left off
-        $curr_kont = $prev_kont->kont if $prev_kont isa Yield;
-        while (defined $curr_kont) {
-            $prev_kont = $curr_kont;
-            my $next = $self->step($curr_kont);
-            $curr_kont = $next;
-        }
-        $halted = true if $prev_kont->kont isa Halt;
-        return $prev_kont->kont;
+        return $self->execute( $enter ) unless @trace;
+        return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
+        return $self->execute( $self->throw_error(
+            "You can only resume from enter, or from a Yield, not ".$self->prev_kont,
+        ));
     }
 
     method step ($kont) {
         $steps++;
         given (blessed $kont) {
             when ('Return') {
-                $curr_kont = $kont->kont;
+                push @trace => $kont->kont;
                 return $kont->kont->kontinue( $self->pid, $kont->value );
             }
             default {
@@ -1062,7 +1061,7 @@ class Host {
             say ">> RESUME ".$pid->DUMP if ::DEBUG;
             say ">" x $WIDTH if ::DEBUG;
             $pid->channel->flush if $pid->channel->has_pending;
-            my $last = $pid->strand->resume;
+            my $last = ($pid->strand->resume)[-1];
             if ($last->isa('Error')) {
                 say "!" x $WIDTH if ::DEBUG;
                 say "!! ERRORED ".$pid->DUMP if ::DEBUG;
