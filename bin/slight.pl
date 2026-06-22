@@ -46,6 +46,7 @@ class Tag :isa(Term) {
 class List :isa(Term) {
     method uncons  { ... }
     method reverse { ... }
+    method length  { ... }
 }
 
 class Nil :isa(List) {
@@ -54,6 +55,7 @@ class Nil :isa(List) {
     method is_nil  { true }
     method uncons  { () }
     method reverse { $self }
+    method length  { 0 }
 }
 
 class Cons :isa(List) {
@@ -65,6 +67,16 @@ class Cons :isa(List) {
         $list = Cons->new( head => (pop @args), tail => $list )
             while @args;
         return $list;
+    }
+
+    method length {
+        my $len = 0;
+        my $l = $self;
+        until ($l->is_nil) {
+            $len++;
+            $l = $l->tail;
+        }
+        return $len;
     }
 
     method reverse { Cons->of( reverse $self->uncons ) }
@@ -106,6 +118,7 @@ class Bool :isa(Literal) {
 
 class Callable :isa(Literal) {
     method has_name       { ... }
+    method arity          { ... }
     method is_operative   { ... }
     method is_applicative { ... }
 }
@@ -117,6 +130,7 @@ class Lambda :isa(Callable) {
     field $name   :param :reader = undef;
 
     method has_name { defined $name }
+    method arity    { $params->length }
 
     method is_operative   { false }
     method is_applicative { true  }
@@ -125,8 +139,9 @@ class Lambda :isa(Callable) {
 }
 
 class Native :isa(Callable) {
-    field $name :param :reader;
-    field $proc :param :reader;
+    field $name  :param :reader;
+    field $proc  :param :reader;
+    field $arity :param :reader = 0;
 
     ADJUST { $name = Sym->new(ident => $name) }
 
@@ -193,6 +208,11 @@ class Env :isa(Term) {
             // (defined $parent ? $parent->lookup($sym) : undef);
     }
 
+    method bind ($sym, $value) {
+        say "HELLO!!! setting ",$sym->to_string;
+        $bindings->{ $sym->ident } = $value;
+    }
+
     method derive (%bindings) {
         return Env->new( parent => $self, bindings => \%bindings )
     }
@@ -257,7 +277,7 @@ class Eval::Expr :isa(Kontinue) {
                 );
             }
             when ('Sym') {
-                my $value = $ctx->strand->lookup($expr);
+                my $value = $ctx->strand->current_scope->lookup($expr);
                 return $ctx->strand->throw_error("Unable to find ".$expr->to_string." in Env", $self)
                     if not defined $value;
                 return $ctx->strand->return_value($value, $self->kont);
@@ -413,7 +433,7 @@ class Bind :isa(Kontinue) {
     field $name :param :reader;
     method kontinue ($ctx, $value) {
         $self->DEBUG($ctx, 'name' => $name, '+value' => $value) if ::DEBUG;
-        $ctx->strand->define( $name, $value );
+        $ctx->strand->current_scope->bind( $name, $value );
         return $ctx->strand->return_value( Nil->NIL, $self->kont );
     }
 
@@ -491,7 +511,7 @@ class Spawn :isa(Kontinue) {
 
     method kontinue ($ctx) {
         $self->DEBUG($ctx) if ::DEBUG;
-        my $kont = $ctx->strand->host->compile( $ctx->strand->current_env, [ $expr ] );
+        my $kont = $ctx->strand->host->compile( $ctx->strand->current_scope, [ $expr ] );
         my $pid  = $ctx->strand->host->spawn( $kont );
         return $ctx->strand->return_value( $pid, $self->kont );
     }
@@ -697,36 +717,61 @@ class Strand {
     field $enter :param :reader;
     field $pid   :param :reader;
 
-    field $steps  :reader;
-    field @trace  :reader;
+    field $curr_kont;
+    field $prev_kont;
+    field $returned;
+
+    field $halted :reader = false;
+    field $steps  :reader = 0;
     field @envs   :reader;
 
     ADJUST {
-        $pid   = PID->new( id => $pid, strand => $self, channel => Channel->new );
-        $steps = 0;
+        $pid = PID->new( id => $pid, strand => $self, channel => Channel->new );
         $::ALLOCATIONS{MISC}->{ blessed $self }++;
     }
 
     ## -------------------------------------------------------------------------
 
-    method enter_scope ($e) { push @envs => [ $e ] }
+    method enter_scope ($e) { push @envs => $e }
     method leave_scope      { pop @envs }
     method current_scope    { $envs[-1] }
-    method current_env      { $self->current_scope->[-1] }
-
-    method lookup ($sym) {
-        $self->current_env->lookup( $sym )
-    }
-
-    method define ($name, $value) {
-        push $self->current_scope->@* =>
-            $self->current_env->derive( $name->ident, $value );
-    }
 
     ## -------------------------------------------------------------------------
 
-    method prev_kont { $trace[-1] }
-    method next_kont { $trace[-1]->kont }
+    method prev_kont { defined $prev_kont ? $prev_kont->kont : undef }
+    method next_kont { defined $curr_kont ? $curr_kont->kont : undef }
+
+    method run { $self->resume }
+
+    method resume {
+        return undef if $halted;     # do not resume if halted
+        $curr_kont //= $enter; # start at enter
+        # otherwise pick up where we left off
+        $curr_kont = $prev_kont->kont if $prev_kont isa Yield;
+        while (defined $curr_kont) {
+            $prev_kont = $curr_kont;
+            my $next = $self->step($curr_kont);
+            $curr_kont = $next;
+        }
+        $halted = true if $prev_kont->kont isa Halt;
+        return $prev_kont->kont;
+    }
+
+    method step ($kont) {
+        $steps++;
+        given (blessed $kont) {
+            when ('Return') {
+                $curr_kont = $kont->kont;
+                return $kont->kont->kontinue( $self->pid, $kont->value );
+            }
+            default {
+                return $kont->kontinue( $self->pid );
+            }
+        }
+    }
+
+    ## -------------------------------------------------------------------------
+    ## Helpers to be used in Native subs
 
     method throw_error ($error, $kont=undef) {
         $host->compiler->throw_error( $error, $kont // $self->next_kont )
@@ -741,7 +786,7 @@ class Strand {
     }
 
     method do_block ($exprs, $kont=undef) {
-        $host->compiler->compile_block( $self->current_env, $exprs, $kont // $self->next_kont )
+        $host->compiler->compile_block( $self->current_scope, $exprs, $kont // $self->next_kont )
     }
 
     method bind ($name, $expr, $kont=undef) {
@@ -766,39 +811,6 @@ class Strand {
 
     method spawn_pid ($expr, $kont=undef) {
         $host->compiler->spawn_pid( $expr, $kont // $self->next_kont )
-    }
-
-    ## -------------------------------------------------------------------------
-
-    method run { $self->execute( $enter ) }
-
-    method execute ($kont) {
-        while (defined $kont) {
-            push @trace => $kont;
-            $kont = $self->step($kont);
-        }
-        return @trace;
-    }
-
-    method resume {
-        return $self->execute( $enter ) unless @trace;
-        return $self->execute( $self->next_kont ) if $self->prev_kont isa Yield;
-        return $self->execute( $self->throw_error(
-            "You can only resume from enter, or from a Yield, not ".$self->prev_kont,
-        ));
-    }
-
-    method step ($kont) {
-        $steps++;
-        given (blessed $kont) {
-            when ('Return') {
-                push @trace => $kont->kont;
-                return $kont->kont->kontinue( $self->pid, $kont->value );
-            }
-            default {
-                return $kont->kontinue( $self->pid );
-            }
-        }
     }
 }
 
@@ -918,7 +930,7 @@ class Host {
                             Lambda->new(
                                 params => $params,
                                 body   => $body,
-                                env    => $ctx->strand->current_env
+                                env    => $ctx->strand->current_scope
                             )
                         )
                     },
@@ -960,7 +972,7 @@ class Host {
                                 name   => $name,
                                 params => $params,
                                 body   => $body,
-                                env    => $ctx->strand->current_env,
+                                env    => $ctx->strand->current_scope,
                             )
                         )
                     },
@@ -1050,16 +1062,16 @@ class Host {
             say ">> RESUME ".$pid->DUMP if ::DEBUG;
             say ">" x $WIDTH if ::DEBUG;
             $pid->channel->flush if $pid->channel->has_pending;
-            my @trace  = $pid->strand->resume;
-            if ($trace[-1]->isa('Error')) {
+            my $last = $pid->strand->resume;
+            if ($last->isa('Error')) {
                 say "!" x $WIDTH if ::DEBUG;
                 say "!! ERRORED ".$pid->DUMP if ::DEBUG;
                 say "!" x $WIDTH if ::DEBUG;
-                warn $trace[-1]->error, "\n";
+                warn $last->error, "\n";
                 last unless @pids;
                 next;
             }
-            if ($trace[-1]->isa('Halt')) {
+            if ($last->isa('Halt')) {
                 say "*" x $WIDTH if ::DEBUG;
                 say "** HALTING ".$pid->DUMP if ::DEBUG;
                 say "*" x $WIDTH if ::DEBUG;
