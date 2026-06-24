@@ -280,44 +280,50 @@ class Interpreter {
     field $alloc :param :reader;
 
     method run ($expr, $env) {
-        my $result = $self->evaluate( $expr, $env );
+        my $running = true;
+        my $kont    = sub ($c, $e, $k) { return $c, $e, undef };
+        while (defined $kont) {
+            my ($returned, $e, $next) = $self->evaluate( $expr, $env, $kont );
+            ($expr, $env, $kont) = $next->( $returned, $e, $kont );
+        }
+        return $expr;
     }
 
-    method evaluate ($expr, $env) {
+    method evaluate ($expr, $env, $kont) {
         say "EVAL: ",::pprint($expr);
         given (blessed $expr) {
-            when ('Sym') {
-                return $env->lookup( $expr )
-                    // $alloc->Error("Cannot find ".::pprint($expr))
-            }
             when ('Cons') {
-
-
-                $self->evaluate( $expr->head, $env )
-                $alloc->Map( sub ($t) { $self->evaluate( $t, $env ) }, $expr->tail ),
-                $self->apply( ..., ..., $env );
-
-                return $self->apply(
-                    $self->evaluate( $expr->head, $env ),
-                    $alloc->Map( sub ($t) { $self->evaluate( $t, $env ) }, $expr->tail ),
-                    $env
-                )
-            }
-            when ('Condition') {
-                my $cond = $self->evaluate( $expr->condition, $env );
-                if ($cond isa Bool && $cond->raw == true ) {
-                    return $self->evaluate( $expr->if_true, $env );
+                if ($expr->tail->is_nil) {
+                    return $expr->head, $env, sub ($c, $e, $k) {
+                        die "APPLY $c $e $k"
+                    }
                 } else {
-                    return $self->evaluate( $expr->if_false, $env );
+                    my $call = $expr->head;
+                    my $args = $expr->tail;
+                    my $done = $alloc->Nil;
+                    return $args->head, $env, sub ($c, $e, $k) {
+                        $done = $alloc->Cons( $c, $done );
+                        $args = $args->tail;
+                        if ($args->is_nil) {
+                            return $call, $env, sub (@) { die "APPLY HERE!" }
+                        } else {
+                            return $args->head, $e, __SUB__;
+                        }
+                    }
                 }
             }
+            when ('Sym') {
+                return ($env->lookup( $expr ) // $alloc->Error("Cannot find ".::pprint($expr))),
+                       $env,
+                       $kont
+            }
             default {
-                return $expr;
+                return $expr, $env, $kont;
             }
         }
     }
 
-    method apply ($call, $args, $env) {
+    method apply ($call, $args, $env, $kont) {
         say "APPLY: ",::pprint($call);
         say " ARGS: ",::pprint($args);
         given (blessed $call) {
@@ -328,7 +334,7 @@ class Interpreter {
                 )
             }
             when ('BuiltIn') {
-                return $call->body->( $args->uncons );
+                return $call->body->( $args->uncons ), $env, $kont;
             }
             default {
                 die "CANNOT APPLY $call";
@@ -352,12 +358,12 @@ my $env = $a->Env({
 });
 
 my $source = q[
-    (if #f 10 20)
+    10
 ];
 
 my ($parsed) = $p->parse($source)->@*;
 my $compiled = $c->compile( $parsed, $env );
-my $evaled   = $i->evaluate( $compiled, $env );
+my $evaled   = $i->run( $compiled, $env );
 say "GOT: ",pprint($evaled);
 
 
