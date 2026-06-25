@@ -323,7 +323,7 @@ class Interpreter {
 
     method execute ($expr, $env, $kont) {
         until ($halted) {
-            $steps++
+            $steps++;
             ($expr, $env, $kont) = $self->evaluate( $expr, $env, $kont );
             last if not defined $kont;
             ($expr, $env, $kont) = $kont->( $expr, $env ) if $expr isa Literal;
@@ -443,6 +443,5 @@ my $source = q[
 my $parsed   = $p->parse($source);
 my $compiled = $c->compile( $parsed, $env );
 my $evaled   = $i->run( $compiled, $env );
-say "GOT: ",pprint($evaled);
-
+say "GOT: ",pprint($evaled)," in ",$i->steps," steps";
 
