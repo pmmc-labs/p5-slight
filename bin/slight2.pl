@@ -173,6 +173,13 @@ class Parser {
         }
     }
 
+    method skip_until_newline {
+        while (@chars) {
+            last if $chars[0] =~ /\n/;
+            shift @chars
+        }
+    }
+
     method push_stack ($value) { push $tokens[-1]->@* => $value }
     method pop_stack           { pop $tokens[-1]->@* }
 
@@ -190,6 +197,9 @@ class Parser {
         given ($next) {
             when (/\s/) {
                 $self->skip_whitespace;
+            }
+            when (';') {
+                $self->skip_until_newline;
             }
             when ('(') {
                 push @tokens => +[];
@@ -304,11 +314,12 @@ class Compiler {
 
 package Kontinue::HALT  {}
 package Kontinue::ERROR {}
-package Kontinue::APPLY {}
-package Kontinue::EVAL_HEAD {}
-package Kontinue::EVAL_ARGS {}
 package Kontinue::COND  {}
 package Kontinue::LEAVE {}
+package Kontinue::APPLY {}
+package Kontinue::EVAL_EXPR {}
+package Kontinue::EVAL_HEAD {}
+package Kontinue::EVAL_ARGS {}
 
 class Interpreter {
     field $alloc :reader :param;
@@ -321,9 +332,10 @@ class Interpreter {
 
     method run ($exprs, $env) {
         my @exprs = @$exprs;
-        return $self->execute( shift @exprs, $env, kontinue EVAL => sub ($c, $e) {
+        return $alloc->Nil unless @exprs;
+        return $self->execute( shift @exprs, $env, kontinue EVAL_EXPR => sub ($c, $e) {
             return shift @exprs, $e, __SUB__ if @exprs;
-            return $c, $e, $HALT;
+            return $c, $e, undef;
         });
     }
 
@@ -332,9 +344,15 @@ class Interpreter {
             $steps++;
             ($expr, $env, $kont) = $self->evaluate( $expr, $env, $kont );
             last if not defined $kont;
-            ($expr, $env, $kont) = $kont->( $expr, $env ) if $expr isa Literal;
         }
         return $expr;
+    }
+
+    method return_value ($expr, $env, $kont) {
+        my $depth = 0;
+        1 while caller( ++$depth );
+        say sprintf 'RETURN(%d) : %s' => $depth, $expr->pprint;
+        $kont->( $expr, $env )
     }
 
     method evaluate ($expr, $env, $kont) {
@@ -370,12 +388,12 @@ class Interpreter {
             }
             when ('Sym') {
                 if (my $found = $env->lookup( $expr )) {
-                    return $found, $env, $kont;
+                    return $self->return_value( $found, $env, $kont );
                 }
                 return $alloc->Error("Could not find (".$expr->pprint.") in Env"), $env, $ERROR;
             }
             default {
-                return $expr, $env, $kont;
+                return $self->return_value( $expr, $env, $kont );
             }
         }
     }
@@ -390,10 +408,12 @@ class Interpreter {
                         $alloc->CallerEnv( $call, $args ),
                         $kont isa Kontinue::LEAVE
                             ? $kont
-                            : kontinue LEAVE => sub ($c, $) { return $c, $env, $kont }
+                            : kontinue LEAVE => sub ($c, $) {
+                                return $self->return_value( $c, $env, $kont )
+                            }
                 }
                 when ('BuiltIn') {
-                    return $call->body->( $args->uncons ), $env, $kont;
+                    return $self->return_value( $call->body->( $args->uncons ), $env, $kont );
                 }
                 default {
                     return $alloc->Error("Could not apply (".$call->pprint.")"), $env, $ERROR;
@@ -435,7 +455,40 @@ my $env = $a->Env({
 
 my $source = q[
 
-    (+ 10 20)
+    (defun fact (n)
+        (if (== n 0) 1
+            (* n (fact (- n 1)))))
+
+    (defun fib (n)
+        (if (< n 2) n
+            (+ (fib (- n 1)) (fib (- n 2)))))
+
+    (defun tail-call-demo (n)
+        (if (== n 0) 0
+           (tail-call-demo (- n 1))))
+
+    (defun length (list)
+        (if (nil? list) 0
+            (+ 1 (length (cdr list)))))
+
+    (defun length-iter (list count)
+        (if (nil? list) count
+            (length-iter (cdr list) (+ count 1))))
+
+    (defun map (f lst)
+        (if (nil? lst) ()
+            (cons (f (car lst)) (map f (cdr lst)))))
+
+    (list
+        (fact 6)
+        (fib 6)
+        (fact (fib 6))
+        (length (list 1 2 3 4 5))
+        (length-iter (list 1 2 3 4 5) 0)
+        (map (lambda (n) (+ 1 n)) (list 1 2 3 4 5))
+        (tail-call-demo 10)
+    )
+
 ];
 
 my $parsed   = $p->parse($source);
@@ -445,14 +498,3 @@ say "GOT: ",$evaled->pprint," in ",$i->steps," steps";
 
 
 
-__END__
-
-    (defun fact (n)
-        (if (== n 0) 1
-            (* n (fact (- n 1)))))
-
-    (defun fib (n)
-        (if (< n 2) n
-            (+ (fib (- n 1)) (fib (- n 2)))))
-
-    (fact (fib 6))
