@@ -385,9 +385,12 @@ class Interpreter {
             say sprintf '@ APPLY : %s %s' => $call->pprint, $args->pprint;
             given (blessed $call) {
                 when ('Lambda') {
-                    return $call->body, $alloc->CallerEnv( $call, $args ), kontinue LEAVE => sub ($c, $) {
-                        return $c, $env, $kont;
-                    }
+                    return
+                        $call->body,
+                        $alloc->CallerEnv( $call, $args ),
+                        $kont isa Kontinue::LEAVE
+                            ? $kont
+                            : kontinue LEAVE => sub ($c, $) { return $c, $env, $kont }
                 }
                 when ('BuiltIn') {
                     return $call->body->( $args->uncons ), $env, $kont;
@@ -431,6 +434,19 @@ my $env = $a->Env({
 ## -----------------------------------------------------------------------------
 
 my $source = q[
+
+    (list 10 20 30)
+];
+
+my $parsed   = $p->parse($source);
+my $compiled = $c->compile( $parsed, $env );
+my $evaled   = $i->run( $compiled, $env );
+say "GOT: ",$evaled->pprint," in ",$i->steps," steps";
+
+
+
+__END__
+
     (defun fact (n)
         (if (== n 0) 1
             (* n (fact (- n 1)))))
@@ -440,10 +456,3 @@ my $source = q[
             (+ (fib (- n 1)) (fib (- n 2)))))
 
     (fact (fib 6))
-];
-
-my $parsed   = $p->parse($source);
-my $compiled = $c->compile( $parsed, $env );
-my $evaled   = $i->run( $compiled, $env );
-say "GOT: ",$evaled->pprint," in ",$i->steps," steps";
-
