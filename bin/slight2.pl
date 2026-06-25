@@ -18,6 +18,29 @@ our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
 
 class Term {
     method is_nil { false }
+
+    method pprint {
+        given (__CLASS__) {
+            when ('Sym')       { $term->ident }
+            when ('Str')       { $term->raw }
+            when ('Num')       { $term->raw }
+            when ('Bool')      { $term->raw ? '#t' : '#f' }
+            when ('Nil')       { '#n' }
+            when ('Cons')      { sprintf '(%s)' => join ' ' => map { $_->pprint } $term->uncons }
+            when ('Lambda')    { sprintf '(<lambda> %s %s)' => $term->params->pprint, $term->body->pprint }
+            when ('BuiltIn')   { sprintf '&<%s>' => $term->name }
+            when ('Env')       { '#env' }
+            when ('Error')     { $term->msg->pprint }
+            when ('Condition') {
+                sprintf '(<if> %s %s %s)' => $term->cond->pprint,
+                    $term->if_true->pprint,
+                    $term->if_false->pprint
+            }
+            default {
+                die "WTF! $term";
+            }
+        }
+    }
 }
 
 class Sym :isa(Term) { field $ident :reader :param; }
@@ -83,6 +106,8 @@ class Env :isa(Term) {
     }
 }
 
+## -----------------------------------------------------------------------------
+
 class Allocator {
     method Nil   { state $Nil   = Nil->new }
     method True  { state $True  = Bool->new( raw => true ) }
@@ -106,7 +131,7 @@ class Allocator {
 
     method Condition ($c, $t, $f) { Condition->new( cond => $c, if_true => $t, if_false => $f ) }
 
-    ## -------------------------------------------------------------------------
+    ## ... utils
 
     method List (@list) {
         my $list = $self->Nil;
@@ -115,7 +140,6 @@ class Allocator {
         }
         return $list;
     }
-
     method Map ($f, $list) { $self->List( map { $f->($_) } $list->uncons ) }
     method Reverse ($list) { $self->List( reverse $list->uncons ) }
 
@@ -132,28 +156,7 @@ class Allocator {
     }
 }
 
-sub pprint ($term) {
-    given (blessed $term) {
-        when ('Sym')       { $term->ident }
-        when ('Str')       { $term->raw }
-        when ('Num')       { $term->raw }
-        when ('Bool')      { $term->raw ? '#t' : '#f' }
-        when ('Nil')       { '#n' }
-        when ('Cons')      { sprintf '(%s)' => join ' ' => map { pprint($_) } $term->uncons }
-        when ('Lambda')    { sprintf '(<lambda> %s %s)' => pprint($term->params), pprint($term->body) }
-        when ('BuiltIn')   { sprintf '&<%s>' => $term->name }
-        when ('Env')       { '#env' }
-        when ('Error')     { pprint($term->msg) }
-        when ('Condition') {
-            sprintf '(<if> %s %s %s)' => pprint($term->cond),
-                pprint($term->if_true),
-                pprint($term->if_false)
-        }
-        default {
-            die "WTF! $term";
-        }
-    }
-}
+## -----------------------------------------------------------------------------
 
 class Parser {
     field $alloc  :param :reader;
@@ -334,11 +337,11 @@ class Interpreter {
     method evaluate ($expr, $env, $kont) {
         my $depth = 0;
         1 while caller( ++$depth );
-        say sprintf '[%02d] EVAL: %s' => $depth, ::pprint($expr);
+        say sprintf '[%02d] EVAL: %s' => $depth, $expr->pprint;
         given (blessed $expr) {
             when ('Condition') {
                 return $expr->cond, $env, kontinue COND => sub ($c, $e) {
-                    return $alloc->Error("Expected a Bool, got (".::pprint($c).")"), $env, $ERROR
+                    return $alloc->Error("Expected a Bool, got (".$c->pprint.")"), $env, $ERROR
                         unless $c isa Bool;
                     return ($c->raw ? $expr->if_true : $expr->if_false), $env, $kont;
                 }
@@ -358,13 +361,13 @@ class Interpreter {
 
                         my $depth = 0;
                         1 while caller( ++$depth );
-                        say sprintf '   [%02d] ARGS: %s -> %s' => $depth, ::pprint($expr), ::pprint($done);
+                        say sprintf '   [%02d] ARGS: %s -> %s' => $depth, $expr->pprint, $done->pprint;
 
                         if ($rest->is_nil) {
-                            say sprintf '   [%02d]  <- : %s' => $depth, ::pprint($done);
+                            say sprintf '   [%02d]  <- : %s' => $depth, $done->pprint;
                             return $call, $env, kontinue APPLY => sub ($c, $e) {
                                 $done = $alloc->Reverse( $done );
-                                say "    ... APPLY: ",::pprint($call)," w/ ".::pprint($done);
+                                say "    ... APPLY: ",$call->pprint," w/ ".$done->pprint;
                                 given (blessed $c) {
                                     when ('Lambda') {
                                         return $c->body, $alloc->CallerEnv( $c, $done ), kontinue LEAVE => sub ($c, $e) {
@@ -375,7 +378,7 @@ class Interpreter {
                                         return $c->body->( $done->uncons ), $env, $kont;
                                     }
                                     default {
-                                        return $alloc->Error("Could not apply (".::pprint($c).")"), $env, $ERROR;
+                                        return $alloc->Error("Could not apply (".$c->pprint.")"), $env, $ERROR;
                                     }
                                 }
                             }
@@ -391,10 +394,10 @@ class Interpreter {
                 if (my $found = $env->lookup( $expr )) {
                     return $found, $env, $kont;
                 }
-                return $alloc->Error("Could not find (".::pprint($expr).") in Env"), $env, $ERROR;
+                return $alloc->Error("Could not find (".$expr->pprint.") in Env"), $env, $ERROR;
             }
             default {
-                say sprintf '[%02d]  <- : %s' => $depth, ::pprint($expr);
+                say sprintf '[%02d]  <- : %s' => $depth, $expr->pprint;
                 return $expr, $env, $kont;
             }
         }
