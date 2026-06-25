@@ -21,23 +21,23 @@ class Term {
 
     method pprint {
         given (__CLASS__) {
-            when ('Sym')       { $term->ident }
-            when ('Str')       { $term->raw }
-            when ('Num')       { $term->raw }
-            when ('Bool')      { $term->raw ? '#t' : '#f' }
+            when ('Sym')       { $self->ident }
+            when ('Str')       { $self->raw }
+            when ('Num')       { $self->raw }
+            when ('Bool')      { $self->raw ? '#t' : '#f' }
             when ('Nil')       { '#n' }
-            when ('Cons')      { sprintf '(%s)' => join ' ' => map { $_->pprint } $term->uncons }
-            when ('Lambda')    { sprintf '(<lambda> %s %s)' => $term->params->pprint, $term->body->pprint }
-            when ('BuiltIn')   { sprintf '&<%s>' => $term->name }
+            when ('Cons')      { sprintf '(%s)' => join ' ' => map { $_->pprint } $self->uncons }
+            when ('Lambda')    { sprintf '(<lambda> %s %s)' => $self->params->pprint, $self->body->pprint }
+            when ('BuiltIn')   { sprintf '&<%s>' => $self->name }
             when ('Env')       { '#env' }
-            when ('Error')     { $term->msg->pprint }
+            when ('Error')     { $self->msg->pprint }
             when ('Condition') {
-                sprintf '(<if> %s %s %s)' => $term->cond->pprint,
-                    $term->if_true->pprint,
-                    $term->if_false->pprint
+                sprintf '(<if> %s %s %s)' => $self->cond->pprint,
+                    $self->if_true->pprint,
+                    $self->if_false->pprint
             }
             default {
-                die "WTF! $term";
+                die "WTF! $self";
             }
         }
     }
@@ -249,6 +249,8 @@ class Parser {
     }
 }
 
+## -----------------------------------------------------------------------------
+
 class Compiler {
     field $alloc :param :reader;
 
@@ -297,6 +299,8 @@ class Compiler {
         }
     }
 }
+
+## -----------------------------------------------------------------------------
 
 package Kontinue::HALT  {}
 package Kontinue::ERROR {}
@@ -404,6 +408,7 @@ class Interpreter {
     }
 }
 
+## -----------------------------------------------------------------------------
 
 my $a = Allocator->new;
 my $p = Parser->new( alloc => $a );
@@ -431,6 +436,8 @@ my $env = $a->Env({
     'cdr'   => $a->BuiltIn('car'  => sub ($list)  { $list->tail }),
 });
 
+## -----------------------------------------------------------------------------
+
 my $source = q[
     (defun fact (n)
         (if (== n 0) 1
@@ -446,5 +453,5 @@ my $source = q[
 my $parsed   = $p->parse($source);
 my $compiled = $c->compile( $parsed, $env );
 my $evaled   = $i->run( $compiled, $env );
-say "GOT: ",pprint($evaled)," in ",$i->steps," steps";
+say "GOT: ",$evaled->pprint," in ",$i->steps," steps";
 
