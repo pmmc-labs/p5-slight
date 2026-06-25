@@ -119,16 +119,12 @@ class Allocator {
     method Str ($s) { Str->new( raw   => $s ) }
     method Num ($n) { Num->new( raw   => $n ) }
 
-    method Cons ($h, $t=undef) { Cons->new( head => $h, tail => $t // $self->Nil ) }
+    method Cons  ($h, $t=undef) { Cons->new( head => $h, tail => $t // $self->Nil ) }
+    method Env   ($b, $p=undef) { Env->new( bindings => $b, parent => $p ) }
+    method Error ($m)           { Error->new( msg => $m ) }
 
-    method Error ($m) { Error->new( msg => $m ) }
-
-    method Env ($b, $p=undef) { Env->new( bindings => $b, parent => $p ) }
-
-    method Lambda ($p, $b, $e) { Lambda->new( params => $p, body => $b, env => $e ) }
-
-    method BuiltIn ($n, $b) { BuiltIn->new( name => $n, body => $b ) }
-
+    method Lambda    ($p, $b, $e) { Lambda->new( params => $p, body => $b, env => $e ) }
+    method BuiltIn   ($n, $b)     { BuiltIn->new( name => $n, body => $b ) }
     method Condition ($c, $t, $f) { Condition->new( cond => $c, if_true => $t, if_false => $f ) }
 
     ## ... utils
@@ -140,6 +136,7 @@ class Allocator {
         }
         return $list;
     }
+
     method Map ($f, $list) { $self->List( map { $f->($_) } $list->uncons ) }
     method Reverse ($list) { $self->List( reverse $list->uncons ) }
 
@@ -542,8 +539,6 @@ my $source = q[
                     (list 100 25 10 411 75 20 35 1000)))
         )
     )
-
-
 
 ];
 
