@@ -30,7 +30,7 @@ class Term {
             when ('Lambda')    { sprintf '(<lambda> %s %s)' => $self->params->pprint, $self->body->pprint }
             when ('BuiltIn')   { sprintf '&<%s>' => $self->name }
             when ('Env')       { '#env' }
-            when ('Error')     { $self->msg->pprint }
+            when ('Error')     { sprintf 'ERROR(%s)' => $self->msg }
             when ('Condition') {
                 sprintf '(<if> %s %s %s)' => $self->cond->pprint,
                     $self->if_true->pprint,
@@ -305,15 +305,14 @@ class Compiler {
 package Kontinue::HALT  {}
 package Kontinue::ERROR {}
 package Kontinue::APPLY {}
-package Kontinue::EVAL  {}
+package Kontinue::EVAL_HEAD {}
+package Kontinue::EVAL_ARGS {}
 package Kontinue::COND  {}
 package Kontinue::LEAVE {}
 
 class Interpreter {
     field $alloc :reader :param;
-
-    field $halted :reader = false;
-    field $steps  :reader = 0;
+    field $steps :reader = 0;
 
     sub kontinue ($name, $f) { bless $f => "Kontinue::${name}" }
 
@@ -321,15 +320,15 @@ class Interpreter {
     my $ERROR = kontinue ERROR => sub ($c, $e) { return $c, $e, undef };
 
     method run ($exprs, $env) {
-        my $result = $alloc->Nil;
-        while (@$exprs) {
-            $result = $self->execute( shift @$exprs, $env, $HALT );
-        }
-        return $result;
+        my @exprs = @$exprs;
+        return $self->execute( shift @exprs, $env, kontinue EVAL => sub ($c, $e) {
+            return shift @exprs, $e, __SUB__ if @exprs;
+            return $c, $e, $HALT;
+        });
     }
 
     method execute ($expr, $env, $kont) {
-        until ($halted) {
+        while (true) {
             $steps++;
             ($expr, $env, $kont) = $self->evaluate( $expr, $env, $kont );
             last if not defined $kont;
@@ -339,57 +338,32 @@ class Interpreter {
     }
 
     method evaluate ($expr, $env, $kont) {
-        my $depth = 0;
-        1 while caller( ++$depth );
-        say sprintf '[%02d] EVAL: %s' => $depth, $expr->pprint;
+        say sprintf '> EVAL : %s' => $expr->pprint;
         given (blessed $expr) {
             when ('Condition') {
                 return $expr->cond, $env, kontinue COND => sub ($c, $e) {
-                    return $alloc->Error("Expected a Bool, got (".$c->pprint.")"), $env, $ERROR
+                    return $alloc->Error("Expected a Bool, got (".$c->pprint.")"), $e, $ERROR
                         unless $c isa Bool;
-                    return ($c->raw ? $expr->if_true : $expr->if_false), $env, $kont;
+                    return ($c->raw ? $expr->if_true : $expr->if_false), $e, $kont;
                 }
             }
             when ('Cons') {
-                if ($expr->tail->is_nil) {
-                    return $expr->head, $env, kontinue APPLY => sub ($c, $e) {
-                        return $self->apply( $c, $expr->tail, $e, $kont );
-                    }
-                } else {
-                    my $call  = $expr->head;
-                    my $first = $expr->tail->head;
-                    my $rest  = $expr->tail->tail;
-                    my $done  = $alloc->Nil;
-                    return $first, $env, kontinue EVAL => sub ($c, $e) {
-                        $done = $alloc->Cons( $c, $done );
-
-                        my $depth = 0;
-                        1 while caller( ++$depth );
-                        say sprintf '   [%02d] ARGS: %s -> %s' => $depth, $expr->pprint, $done->pprint;
-
-                        if ($rest->is_nil) {
-                            say sprintf '   [%02d]  <- : %s' => $depth, $done->pprint;
-                            return $call, $env, kontinue APPLY => sub ($c, $e) {
-                                $done = $alloc->Reverse( $done );
-                                say "    ... APPLY: ",$call->pprint," w/ ".$done->pprint;
-                                given (blessed $c) {
-                                    when ('Lambda') {
-                                        return $c->body, $alloc->CallerEnv( $c, $done ), kontinue LEAVE => sub ($c, $e) {
-                                            return $c, $env, $kont;
-                                        }
-                                    }
-                                    when ('BuiltIn') {
-                                        return $c->body->( $done->uncons ), $env, $kont;
-                                    }
-                                    default {
-                                        return $alloc->Error("Could not apply (".$c->pprint.")"), $env, $ERROR;
-                                    }
-                                }
+                return $expr->head, $env, kontinue EVAL_HEAD => sub ($call, $e) {
+                    my $args = $expr->tail;
+                    say sprintf '> GOT CALL : %s' => $call->pprint;
+                    if ($args->is_nil) {
+                        return $call, $env, $self->apply( $args, $env, $kont )
+                    } else {
+                        my $done = $alloc->Nil;
+                        return $args->head, $env, kontinue EVAL_ARGS => sub ($c, $e) {
+                            $done = $alloc->Cons( $c, $done );
+                            $args = $args->tail;
+                            say sprintf '+ ARGS : %s DONE : %s' => $args->pprint, $done->pprint;
+                            if ($args->is_nil) {
+                                return $call, $env, $self->apply( $alloc->Reverse( $done ), $env, $kont )
+                            } else {
+                                return $args->head, $e, __SUB__;
                             }
-                        } else {
-                            my $next = $rest->head;
-                            $rest = $rest->tail;
-                            return $next, $e, __SUB__;
                         }
                     }
                 }
@@ -401,8 +375,26 @@ class Interpreter {
                 return $alloc->Error("Could not find (".$expr->pprint.") in Env"), $env, $ERROR;
             }
             default {
-                say sprintf '[%02d]  <- : %s' => $depth, $expr->pprint;
                 return $expr, $env, $kont;
+            }
+        }
+    }
+
+    method apply ($args, $env, $kont) {
+        kontinue APPLY => sub ($call, $e) {
+            say sprintf '@ APPLY : %s %s' => $call->pprint, $args->pprint;
+            given (blessed $call) {
+                when ('Lambda') {
+                    return $call->body, $alloc->CallerEnv( $call, $args ), kontinue LEAVE => sub ($c, $) {
+                        return $c, $env, $kont;
+                    }
+                }
+                when ('BuiltIn') {
+                    return $call->body->( $args->uncons ), $env, $kont;
+                }
+                default {
+                    return $alloc->Error("Could not apply (".$call->pprint.")"), $env, $ERROR;
+                }
             }
         }
     }
@@ -433,7 +425,7 @@ my $env = $a->Env({
     'list'  => $a->BuiltIn('list' => sub (@items) { $a->List( @items ) }),
     'cons'  => $a->BuiltIn('cons' => sub ($h, $t) { $a->Cons( $h, $t ) }),
     'car'   => $a->BuiltIn('car'  => sub ($list)  { $list->head }),
-    'cdr'   => $a->BuiltIn('car'  => sub ($list)  { $list->tail }),
+    'cdr'   => $a->BuiltIn('cdr'  => sub ($list)  { $list->tail }),
 });
 
 ## -----------------------------------------------------------------------------
