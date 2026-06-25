@@ -455,6 +455,10 @@ my $env = $a->Env({
 
 my $source = q[
 
+    (defun adder (n m) (+ n m))
+
+    (defun double (n) (adder n n))
+
     (defun fact (n)
         (if (== n 0) 1
             (* n (fact (- n 1)))))
@@ -475,9 +479,30 @@ my $source = q[
         (if (nil? list) count
             (length-iter (cdr list) (+ count 1))))
 
+    (defun range (b e)
+        (if (== b e)
+            (cons e ())
+            (cons b (range (+ b 1) e))))
+
     (defun map (f lst)
         (if (nil? lst) ()
             (cons (f (car lst)) (map f (cdr lst)))))
+
+    (defun grep (f lst)
+        (if (nil? lst) ()
+            (if (f (car lst))
+                (cons (car lst) (grep f (cdr lst)))
+                (grep f (cdr lst)))))
+
+    (defun reduce (acc f lst)
+        (if (nil? lst) acc
+            (reduce (f (car lst) acc) f (cdr lst))))
+
+    (defun sum (lst)
+        (reduce 0 (lambda (n acc) (+ acc n)) lst))
+
+    (defun product (lst)
+        (reduce 1 (lambda (n acc) (* acc n)) lst))
 
     (list
         (fact 6)
@@ -485,9 +510,40 @@ my $source = q[
         (fact (fib 6))
         (length (list 1 2 3 4 5))
         (length-iter (list 1 2 3 4 5) 0)
-        (map (lambda (n) (+ 1 n)) (list 1 2 3 4 5))
         (tail-call-demo 10)
+        ;; bunch of silly ways to get 30
+        (list
+            30
+            (+ 10 20)
+            (+ (* 2 5) 20)
+            (+ 10 (* 4 5))
+            (+ (* 2 5) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
+            (adder 10 20)
+            (adder (double 5) 20)
+            (adder 10 (* (double 2) 5))
+            (adder (fib 6) 22)
+            (adder (fib 8) (+ 1 (double 4)))
+            (- (fact 6) (+ (* (fact 3) 100) 90))
+            ((lambda (n m) (+ n m)) 10 20)
+            ((lambda (f n m) (f n m)) + 10 20)
+            (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
+            (length (range 1 30))
+            (+ (length (range 1 10)) (length (range 1 (* 4 5))))
+            (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
+            (sum (list 4 (fib 8) (- (fact 3) 1)))
+            (+ (sum (range 0 (fib 6))) (- 2 8))
+            (sum (grep
+                    (lambda (x) (>= x 10))
+                    (list 0 2 10 4 7 20 3 1)))
+            (sum (map
+                    (lambda (x) (if (<= x 20) x 0))
+                    (list 100 25 10 411 75 20 35 1000)))
+        )
     )
+
+
 
 ];
 
