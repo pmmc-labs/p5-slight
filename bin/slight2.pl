@@ -7,6 +7,18 @@ use experimental qw[ class switch ];
 use Data::Dumper qw[ Dumper ];
 
 ## -----------------------------------------------------------------------------
+## TODO
+## -----------------------------------------------------------------------------
+## - use the DEBUG flag
+## - add a Bind term, similar to Condition
+## - clean up the Interpreter a bit
+##      - stuff like:
+##          - the kontinue helper is kind gross now
+##          - error handling could be improved
+##      - in both cases, a new method is probably the right answer
+## - add equal_to method to Term
+##      - make it similar to pprint
+## -----------------------------------------------------------------------------
 
 use constant DEBUG => $ENV{DEBUG} // 0;
 
@@ -18,7 +30,6 @@ our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
 
 class Term {
     method is_nil { false }
-
     method pprint {
         given (__CLASS__) {
             when ('Sym')       { $self->ident }
@@ -43,19 +54,17 @@ class Term {
     }
 }
 
-class Sym :isa(Term) { field $ident :reader :param; }
-
-class Literal :isa(Term) {}
-class Str  :isa(Literal) { field $raw :reader :param; }
-class Num  :isa(Literal) { field $raw :reader :param; }
-class Bool :isa(Literal) { field $raw :reader :param; }
-
-class List :isa(Term) {}
-class Nil :isa(List) { method is_nil { true } }
-class Cons :isa(List) {
+class Sym     :isa(Term)    { field $ident :reader :param; }
+class Literal :isa(Term)    {}
+class Str     :isa(Literal) { field $raw :reader :param; }
+class Num     :isa(Literal) { field $raw :reader :param; }
+class Bool    :isa(Literal) { field $raw :reader :param; }
+class Error   :isa(Literal) { field $msg :param :reader; }
+class List    :isa(Term)    {}
+class Nil     :isa(List)    { method is_nil { true } }
+class Cons    :isa(List)    {
     field $head :reader :param;
     field $tail :reader :param;
-
     method uncons {
         my @out;
         my $list = $self;
@@ -67,8 +76,14 @@ class Cons :isa(List) {
     }
 }
 
-class Error :isa(Literal) {
-    field $msg :param :reader;
+class Env :isa(Term) {
+    field $parent   :reader :param = undef;
+    field $bindings :reader :param = +{};
+    method bind   ($name, $value) { $bindings->{ $name->ident } = $value }
+    method lookup ($name) {
+        $bindings->{ $name->ident }
+            // (defined $parent ? $parent->lookup( $name ) : undef)
+    }
 }
 
 ## compiled forms ...
@@ -90,56 +105,36 @@ class Condition :isa(Literal) {
     field $if_false :reader :param;
 }
 
-# ...
-
-class Env :isa(Term) {
-    field $parent   :reader :param = undef;
-    field $bindings :reader :param = +{};
-
-    method bind ($sym, $value) {
-        $bindings->{ $sym->ident } = $value;
-    }
-
-    method lookup ($name) {
-        $bindings->{ $name->ident }
-            // (defined $parent ? $parent->lookup( $name ) : undef)
-    }
-}
-
 ## -----------------------------------------------------------------------------
 
 class Allocator {
+    # constants ...
     method Nil   { state $Nil   = Nil->new }
     method True  { state $True  = Bool->new( raw => true ) }
     method False { state $False = Bool->new( raw => false ) }
-
-    method Bool ($b) { $b ? $self->True : $self->False }
-
-    method Sym ($i) { Sym->new( ident => $i ) }
-    method Str ($s) { Str->new( raw   => $s ) }
-    method Num ($n) { Num->new( raw   => $n ) }
-
+    # terms ...
+    method Bool  ($b)           { $b ? $self->True : $self->False }
+    method Sym   ($i)           { Sym->new( ident => $i ) }
+    method Str   ($s)           { Str->new( raw   => $s ) }
+    method Num   ($n)           { Num->new( raw   => $n ) }
     method Cons  ($h, $t=undef) { Cons->new( head => $h, tail => $t // $self->Nil ) }
     method Env   ($b, $p=undef) { Env->new( bindings => $b, parent => $p ) }
     method Error ($m)           { Error->new( msg => $m ) }
-
+    # compiled forms ...
     method Lambda    ($p, $b, $e) { Lambda->new( params => $p, body => $b, env => $e ) }
     method BuiltIn   ($n, $b)     { BuiltIn->new( name => $n, body => $b ) }
     method Condition ($c, $t, $f) { Condition->new( cond => $c, if_true => $t, if_false => $f ) }
-
-    ## ... utils
-
-    method List (@list) {
+    # ... list utils
+    method Map ($f, $list) { $self->List( map { $f->($_) } $list->uncons ) }
+    method Reverse ($list) { $self->List( reverse $list->uncons ) }
+    method List    (@list) {
         my $list = $self->Nil;
         while (@list) {
             $list = $self->Cons( pop @list, $list );
         }
         return $list;
     }
-
-    method Map ($f, $list) { $self->List( map { $f->($_) } $list->uncons ) }
-    method Reverse ($list) { $self->List( reverse $list->uncons ) }
-
+    # ... env utils
     method CallerEnv ($call, $args) {
         my %local;
         my $env    = $call->env;
