@@ -435,7 +435,7 @@ my $env = $a->Env({
 
 my $source = q[
 
-    (list 10 20 30)
+    (+ 10 20)
 ];
 
 my $parsed   = $p->parse($source);
