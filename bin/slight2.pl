@@ -276,15 +276,27 @@ class Compiler {
     }
 }
 
-class Interpreter {
-    field $alloc :param :reader;
+package Kontinue::HALT  {}
+package Kontinue::YIELD {}
+package Kontinue::ERROR {}
+package Kontinue::APPLY {}
+package Kontinue::EARGS {}
+package Kontinue::LKUP  {}
 
-    method run ($expr, $env) {
-        my $running = true;
-        my $kont    = sub ($c, $e, $k) { return $c, $e, undef };
-        while (defined $kont) {
-            my ($returned, $e, $next) = $self->evaluate( $expr, $env, $kont );
-            ($expr, $env, $kont) = $next->( $returned, $e, $kont );
+class Interpreter {
+    field $alloc :reader :param;
+
+    field $halted :reader = false;
+
+    sub kontinue ($name, $f) { bless $f => "Kontinue::${name}" }
+
+    my $HALT  = kontinue HALT  => sub ($c, $e) { return $c, $e, undef };
+    my $ERROR = kontinue ERROR => sub ($c, $e) { return $c, $e, undef };
+
+    method run ($expr, $env, $kont=$HALT) {
+        until ($halted) {
+            ($expr, $env, $kont) = $self->evaluate( $expr, $env, $kont );
+            last unless defined $kont;
         }
         return $expr;
     }
@@ -294,50 +306,51 @@ class Interpreter {
         given (blessed $expr) {
             when ('Cons') {
                 if ($expr->tail->is_nil) {
-                    return $expr->head, $env, sub ($c, $e, $k) {
-                        die "APPLY $c $e $k"
+                    return $expr->head, $env, kontinue APPLY => sub ($c, $e) {
+                        return $self->apply( $c, $expr->tail, $e, $kont );
                     }
                 } else {
-                    my $call = $expr->head;
-                    my $args = $expr->tail;
-                    my $done = $alloc->Nil;
-                    return $args->head, $env, sub ($c, $e, $k) {
+                    my $call  = $expr->head;
+                    my $first = $expr->tail->head;
+                    my $rest  = $expr->tail->tail;
+                    my $done  = $alloc->Nil;
+                    return $first, $env, kontinue EARGS => sub ($c, $e) {
                         $done = $alloc->Cons( $c, $done );
-                        $args = $args->tail;
-                        if ($args->is_nil) {
-                            return $call, $env, sub (@) { die "APPLY HERE!" }
+                        if ($rest->is_nil) {
+                            return $call, $env, kontinue APPLY => sub ($c, $e) {
+                                return $self->apply( $c, $done, $e, $kont );
+                            }
                         } else {
-                            return $args->head, $e, __SUB__;
+                            my $next = $rest->head;
+                            $rest = $rest->tail;
+                            return $next, $e, __SUB__;
                         }
                     }
                 }
             }
             when ('Sym') {
-                return ($env->lookup( $expr ) // $alloc->Error("Cannot find ".::pprint($expr))),
-                       $env,
-                       $kont
+                if (my $found = $env->lookup( $expr )) {
+                    return $kont->( $found, $env );
+                }
+                return $alloc->Error("Could not find (".::pprint($expr).") in Env"), $env, $ERROR;
             }
             default {
-                return $expr, $env, $kont;
+                return $kont->( $expr, $env );
             }
         }
     }
 
     method apply ($call, $args, $env, $kont) {
-        say "APPLY: ",::pprint($call);
-        say " ARGS: ",::pprint($args);
+        say " APPLY: ",::pprint($call)," ".::pprint($args);
         given (blessed $call) {
             when ('Lambda') {
-                return $self->evaluate(
-                    $call->body,
-                    $alloc->CallerEnv( $call, $args )
-                )
+                return $call->body, $alloc->CallerEnv( $call, $args ), $kont
             }
             when ('BuiltIn') {
                 return $call->body->( $args->uncons ), $env, $kont;
             }
             default {
-                die "CANNOT APPLY $call";
+                return $alloc->Error("Could not apply (".::pprint($call).")"), $env, $ERROR;
             }
         }
     }
@@ -358,7 +371,7 @@ my $env = $a->Env({
 });
 
 my $source = q[
-    10
+    (+ 10 (* 4 5))
 ];
 
 my ($parsed) = $p->parse($source)->@*;
