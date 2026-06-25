@@ -335,6 +335,7 @@ class Interpreter {
                 return $alloc->Error("Could not find (".::pprint($expr).") in Env"), $env, $ERROR;
             }
             default {
+                say '...';
                 return $kont->( $expr, $env );
             }
         }
