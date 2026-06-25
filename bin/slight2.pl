@@ -306,6 +306,7 @@ class Interpreter {
     field $alloc :reader :param;
 
     field $halted :reader = false;
+    field $steps  :reader = 0;
 
     sub kontinue ($name, $f) { bless $f => "Kontinue::${name}" }
 
@@ -322,6 +323,7 @@ class Interpreter {
 
     method execute ($expr, $env, $kont) {
         until ($halted) {
+            $steps++
             ($expr, $env, $kont) = $self->evaluate( $expr, $env, $kont );
             last if not defined $kont;
             ($expr, $env, $kont) = $kont->( $expr, $env ) if $expr isa Literal;
