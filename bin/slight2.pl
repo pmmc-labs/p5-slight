@@ -323,12 +323,7 @@ class Interpreter {
     my $ERROR = kontinue ERROR => sub ($c, $e) { return $c, $e, undef };
 
     method run ($exprs, $env) {
-        my @exprs = @$exprs;
-        return $alloc->Nil unless @exprs;
-        return $self->execute( shift @exprs, $env, kontinue EVAL_EXPR => sub ($c, $e) {
-            return shift @exprs, $e, __SUB__ if @exprs;
-            return $c, $e, undef;
-        });
+        return $self->evaluate_statements( $exprs, $env );
     }
 
     method execute ($expr, $env, $kont) {
@@ -340,53 +335,13 @@ class Interpreter {
         return $expr;
     }
 
-    method return_value ($expr, $env, $kont) {
-        my $depth = 0;
-        1 while caller( ++$depth );
-        say sprintf 'RETURN(%d) : %s' => $depth, $expr->pprint;
-        $kont->( $expr, $env )
-    }
-
     method evaluate ($expr, $env, $kont) {
         say sprintf '> EVAL : %s' => $expr->pprint;
         given (blessed $expr) {
-            when ('Condition') {
-                return $expr->cond, $env, kontinue COND => sub ($c, $e) {
-                    return $alloc->Error("Expected a Bool, got (".$c->pprint.")"), $e, $ERROR
-                        unless $c isa Bool;
-                    return ($c->raw ? $expr->if_true : $expr->if_false), $e, $kont;
-                }
-            }
-            when ('Cons') {
-                return $expr->head, $env, kontinue EVAL_HEAD => sub ($call, $e) {
-                    my $args = $expr->tail;
-                    say sprintf '> GOT CALL : %s' => $call->pprint;
-                    if ($args->is_nil) {
-                        return $call, $env, $self->apply( $args, $env, $kont )
-                    } else {
-                        my $done = $alloc->Nil;
-                        return $args->head, $env, kontinue EVAL_ARGS => sub ($c, $e) {
-                            $done = $alloc->Cons( $c, $done );
-                            $args = $args->tail;
-                            say sprintf '+ ARGS : %s DONE : %s' => $args->pprint, $done->pprint;
-                            if ($args->is_nil) {
-                                return $call, $env, $self->apply( $alloc->Reverse( $done ), $env, $kont )
-                            } else {
-                                return $args->head, $e, __SUB__;
-                            }
-                        }
-                    }
-                }
-            }
-            when ('Sym') {
-                if (my $found = $env->lookup( $expr )) {
-                    return $self->return_value( $found, $env, $kont );
-                }
-                return $alloc->Error("Could not find (".$expr->pprint.") in Env"), $env, $ERROR;
-            }
-            default {
-                return $self->return_value( $expr, $env, $kont );
-            }
+            when ('Condition') { $self->conditional   ( $expr, $env, $kont ) }
+            when ('Cons')      { $self->evaluate_head ( $expr, $env, $kont ) }
+            when ('Sym')       { $self->resolve_symbol( $expr, $env, $kont ) }
+            default            { $self->return_value  ( $expr, $env, $kont ) }
         }
     }
 
@@ -408,10 +363,65 @@ class Interpreter {
                     return $self->return_value( $call->body->( $args->uncons ), $env, $kont );
                 }
                 default {
-                    return $alloc->Error("Could not apply (".$call->pprint.")"), $env, $ERROR;
+                    return $self->throw_error("Could not apply (".$call->pprint.")");
                 }
             }
         }
+    }
+
+    method throw_error ($msg, $env) {
+        return $alloc->Error($msg), $env, $ERROR;
+    }
+
+    method return_value ($expr, $env, $kont) {
+        my $depth = 0;
+        1 while caller( ++$depth );
+        say sprintf 'RETURN(%d) : %s' => $depth, $expr->pprint;
+        $kont->( $expr, $env )
+    }
+
+    method conditional ($expr, $env, $kont) {
+        return $expr->cond, $env, kontinue COND => sub ($c, $e) {
+            return $self->throw_error("Expected a Bool, got (".$c->pprint.")")
+                unless $c isa Bool;
+            return ($c->raw ? $expr->if_true : $expr->if_false), $e, $kont;
+        }
+    }
+
+    method resolve_symbol ($expr, $env, $kont) {
+        my $found = $env->lookup( $expr );
+        return $self->throw_error("Could not find (".$expr->pprint.") in Env")
+            unless defined $found;
+        return $self->return_value( $found, $env, $kont )
+    }
+
+    method evaluate_args ($call, $args, $env, $kont) {
+        my $done = $alloc->Nil;
+        return $args->head, $env, kontinue EVAL_ARGS => sub ($c, $e) {
+            $done = $alloc->Cons( $c, $done );
+            $args = $args->tail;
+            say sprintf '+ ARGS : %s DONE : %s' => $args->pprint, $done->pprint;
+            return $call, $env, $self->apply( $alloc->Reverse( $done ), $env, $kont ) if $args->is_nil;
+            return $args->head, $e, __SUB__;
+        }
+    }
+
+    method evaluate_head ($expr, $env, $kont) {
+        my $args = $expr->tail;
+        return $expr->head, $env, kontinue EVAL_HEAD => sub ($call, $e) {
+            say sprintf '> GOT CALL : %s' => $call->pprint;
+            return $call, $env, $self->apply( $args, $env, $kont ) if $args->is_nil;
+            return $self->evaluate_args( $call, $args, $env, $kont );
+        }
+    }
+
+    method evaluate_statements ($exprs, $env, $kont=undef) {
+        my @exprs = @$exprs;
+        return $alloc->Nil unless @exprs;
+        return $self->execute( shift @exprs, $env, kontinue EVAL_EXPR => sub ($c, $e) {
+            return shift @exprs, $e, __SUB__ if @exprs;
+            return $c, $e, $kont;
+        });
     }
 }
 
