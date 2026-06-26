@@ -11,8 +11,6 @@ use Data::Dumper qw[ Dumper ];
 ## -----------------------------------------------------------------------------
 ## - use the DEBUG flag
 ## - add a Bind term, similar to Condition
-## - add equal_to method to Term
-##      - make it similar to pprint
 ## -----------------------------------------------------------------------------
 
 use constant DEBUG => $ENV{DEBUG} // 0;
@@ -358,7 +356,7 @@ class Interpreter {
     }
 
     method evaluate ($expr, $env, $kont) {
-        say sprintf '> EVAL : %s' => $expr->pprint;
+        ::DEBUG && say sprintf '> EVAL : %s' => $expr->pprint;
         given (blessed $expr) {
             when ('Condition') { $self->conditional   ( $expr, $env, $kont ) }
             when ('Cons')      { $self->evaluate_head ( $expr, $env, $kont ) }
@@ -369,7 +367,7 @@ class Interpreter {
 
     method apply ($args, $env, $kont) {
         kontinue APPLY => sub ($call, $e) {
-            say sprintf '@ APPLY : %s %s' => $call->pprint, $args->pprint;
+            ::DEBUG && say sprintf '@ APPLY : %s %s' => $call->pprint, $args->pprint;
             given (blessed $call) {
                 when ('Lambda') {
                     return
@@ -396,9 +394,11 @@ class Interpreter {
     }
 
     method return_value ($expr, $env, $kont) {
-        my $depth = 0;
-        1 while caller( ++$depth );
-        say sprintf 'RETURN(%d) : %s' => $depth, $expr->pprint;
+        ::DEBUG && do {
+            my $depth = 0;
+            1 while caller( ++$depth );
+            say sprintf 'RETURN(%d) : %s' => $depth, $expr->pprint;
+        };
         $kont->( $expr, $env )
     }
 
@@ -422,7 +422,7 @@ class Interpreter {
         return $args->head, $env, kontinue EVAL_ARGS => sub ($c, $e) {
             $done = $alloc->Cons( $c, $done );
             $args = $args->tail;
-            say sprintf '+ ARGS : %s DONE : %s' => $args->pprint, $done->pprint;
+            ::DEBUG && say sprintf '+ ARGS : %s DONE : %s' => $args->pprint, $done->pprint;
             return $call, $env, $self->apply( $alloc->Reverse( $done ), $env, $kont ) if $args->is_nil;
             return $args->head, $e, __SUB__;
         }
@@ -431,7 +431,7 @@ class Interpreter {
     method evaluate_head ($expr, $env, $kont) {
         my $args = $expr->tail;
         return $expr->head, $env, kontinue EVAL_HEAD => sub ($call, $e) {
-            say sprintf '> GOT CALL : %s' => $call->pprint;
+            ::DEBUG && say sprintf '> GOT CALL : %s' => $call->pprint;
             return $call, $env, $self->apply( $args, $env, $kont ) if $args->is_nil;
             return $self->evaluate_args( $call, $args, $env, $kont );
         }
@@ -530,46 +530,44 @@ my $source = q[
     (defun product (lst)
         (reduce 1 (lambda (n acc) (* acc n)) lst))
 
-    (eq? 10 10)
-
-    ; (list
-    ;     (fact 6)
-    ;     (fib 6)
-    ;     (fact (fib 6))
-    ;     (length (list 1 2 3 4 5))
-    ;     (length-iter (list 1 2 3 4 5) 0)
-    ;     (tail-call-demo 10)
-    ;     ;; bunch of silly ways to get 30
-    ;     (list
-    ;         30
-    ;         (+ 10 20)
-    ;         (+ (* 2 5) 20)
-    ;         (+ 10 (* 4 5))
-    ;         (+ (* 2 5) (* 4 5))
-    ;         (+ (* 2 (- 9 4)) (* 4 5))
-    ;         (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
-    ;         (adder 10 20)
-    ;         (adder (double 5) 20)
-    ;         (adder 10 (* (double 2) 5))
-    ;         (adder (fib 6) 22)
-    ;         (adder (fib 8) (+ 1 (double 4)))
-    ;         (- (fact 6) (+ (* (fact 3) 100) 90))
-    ;         ((lambda (n m) (+ n m)) 10 20)
-    ;         ((lambda (f n m) (f n m)) + 10 20)
-    ;         (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
-    ;         (length (range 1 30))
-    ;         (+ (length (range 1 10)) (length (range 1 (* 4 5))))
-    ;         (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
-    ;         (sum (list 4 (fib 8) (- (fact 3) 1)))
-    ;         (+ (sum (range 0 (fib 6))) (- 2 8))
-    ;         (sum (grep
-    ;                 (lambda (x) (>= x 10))
-    ;                 (list 0 2 10 4 7 20 3 1)))
-    ;         (sum (map
-    ;                 (lambda (x) (if (<= x 20) x 0))
-    ;                 (list 100 25 10 411 75 20 35 1000)))
-    ;     )
-    ; )
+    (list
+        (fact 6)
+        (fib 6)
+        (fact (fib 6))
+        (length (list 1 2 3 4 5))
+        (length-iter (list 1 2 3 4 5) 0)
+        (tail-call-demo 10)
+        ;; bunch of silly ways to get 30
+        (list
+            30
+            (+ 10 20)
+            (+ (* 2 5) 20)
+            (+ 10 (* 4 5))
+            (+ (* 2 5) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 5))
+            (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
+            (adder 10 20)
+            (adder (double 5) 20)
+            (adder 10 (* (double 2) 5))
+            (adder (fib 6) 22)
+            (adder (fib 8) (+ 1 (double 4)))
+            (- (fact 6) (+ (* (fact 3) 100) 90))
+            ((lambda (n m) (+ n m)) 10 20)
+            ((lambda (f n m) (f n m)) + 10 20)
+            (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
+            (length (range 1 30))
+            (+ (length (range 1 10)) (length (range 1 (* 4 5))))
+            (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
+            (sum (list 4 (fib 8) (- (fact 3) 1)))
+            (+ (sum (range 0 (fib 6))) (- 2 8))
+            (sum (grep
+                    (lambda (x) (>= x 10))
+                    (list 0 2 10 4 7 20 3 1)))
+            (sum (map
+                    (lambda (x) (if (<= x 20) x 0))
+                    (list 100 25 10 411 75 20 35 1000)))
+        )
+    )
 
 ];
 
