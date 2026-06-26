@@ -340,7 +340,7 @@ class Interpreter {
     my $ERROR = kontinue ERROR => sub ($c, $e) { return $c, $e, undef };
 
     method run ($exprs, $env) {
-        return $self->evaluate_statements( $exprs, $env );
+        return $self->evaluate_statements( $exprs, $env, undef );
     }
 
     method execute ($expr, $env, $kont) {
@@ -442,7 +442,7 @@ class Interpreter {
         }
     }
 
-    method evaluate_statements ($exprs, $env, $kont=undef) {
+    method evaluate_statements ($exprs, $env, $kont) {
         my @exprs = @$exprs;
         return $alloc->Nil unless @exprs;
         return $self->execute( shift @exprs, $env, kontinue EVAL_EXPR => sub ($c, $e) {
