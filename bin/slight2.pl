@@ -448,7 +448,7 @@ class Interpreter {
         return $self->execute( shift @exprs, $env, kontinue EVAL_EXPR => sub ($c, $e) {
             return shift @exprs, $e, __SUB__ if @exprs;
             return $c, $e, $kont;
-        });
+        })
     }
 }
 
