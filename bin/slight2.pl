@@ -578,6 +578,7 @@ my $source = q[
                     (lambda (x) (if (<= x 20) x 0))
                     (list 100 25 10 411 75 20 35 1000)))
         )
+        "done!"
     )
 
 ];
