@@ -11,11 +11,6 @@ use Data::Dumper qw[ Dumper ];
 ## -----------------------------------------------------------------------------
 ## - use the DEBUG flag
 ## - add a Bind term, similar to Condition
-## - clean up the Interpreter a bit
-##      - stuff like:
-##          - the kontinue helper is kind gross now
-##          - error handling could be improved
-##      - in both cases, a new method is probably the right answer
 ## - add equal_to method to Term
 ##      - make it similar to pprint
 ## -----------------------------------------------------------------------------
@@ -30,6 +25,33 @@ our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
 
 class Term {
     method is_nil { false }
+    method is_equal_to ($other) {
+        return false if blessed $self ne blessed $other;
+        given (__CLASS__) {
+            when ('Nil')       { true }
+            when ('Sym')       { $self->ident eq $other->ident }
+            when ('Str')       { $self->raw   eq $other->raw }
+            when ('Num')       { $self->raw   == $other->raw }
+            when ('Bool')      { $self->raw   == $other->raw }
+            when ('Error')     { $self->msg eq $other->msg }
+            when ('Env')       { refaddr $self == refaddr $other }
+            when ('Condition') { refaddr $self == refaddr $other }
+            when ('Cons')      {
+                $self->head->is_equal_to( $other->head )
+                    &&  $self->tail->is_equal_to( $other->tail )
+            }
+            when ('Lambda')    {
+                $self->params->is_equal_to( $other->params )
+                    &&  $self->body->is_equal_to( $other->body )
+                        &&  $self->env->is_equal_to( $other->env )
+            }
+            when ('BuiltIn')   {
+                $self->name eq $other->name
+                    && refaddr $self->body == refaddr $other->body
+            }
+            default { die "WTF! $self" }
+        }
+    }
     method pprint {
         given (__CLASS__) {
             when ('Sym')       { $self->ident }
@@ -446,6 +468,8 @@ my $env = $a->Env({
     '>'  => $a->BuiltIn('>'  => sub ($n, $m) { $a->Bool( $n->raw >  $m->raw ) }),
     '<'  => $a->BuiltIn('<'  => sub ($n, $m) { $a->Bool( $n->raw <  $m->raw ) }),
 
+
+    'eq?'   => $a->BuiltIn('eq?'  => sub ($n, $m) { $a->Bool( $n->is_equal_to($m) ) }),
     'nil?'  => $a->BuiltIn('nil?' => sub ($n)     { $a->Bool( $n isa Nil ) }),
     'list'  => $a->BuiltIn('list' => sub (@items) { $a->List( @items ) }),
     'cons'  => $a->BuiltIn('cons' => sub ($h, $t) { $a->Cons( $h, $t ) }),
@@ -506,44 +530,46 @@ my $source = q[
     (defun product (lst)
         (reduce 1 (lambda (n acc) (* acc n)) lst))
 
-    (list
-        (fact 6)
-        (fib 6)
-        (fact (fib 6))
-        (length (list 1 2 3 4 5))
-        (length-iter (list 1 2 3 4 5) 0)
-        (tail-call-demo 10)
-        ;; bunch of silly ways to get 30
-        (list
-            30
-            (+ 10 20)
-            (+ (* 2 5) 20)
-            (+ 10 (* 4 5))
-            (+ (* 2 5) (* 4 5))
-            (+ (* 2 (- 9 4)) (* 4 5))
-            (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
-            (adder 10 20)
-            (adder (double 5) 20)
-            (adder 10 (* (double 2) 5))
-            (adder (fib 6) 22)
-            (adder (fib 8) (+ 1 (double 4)))
-            (- (fact 6) (+ (* (fact 3) 100) 90))
-            ((lambda (n m) (+ n m)) 10 20)
-            ((lambda (f n m) (f n m)) + 10 20)
-            (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
-            (length (range 1 30))
-            (+ (length (range 1 10)) (length (range 1 (* 4 5))))
-            (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
-            (sum (list 4 (fib 8) (- (fact 3) 1)))
-            (+ (sum (range 0 (fib 6))) (- 2 8))
-            (sum (grep
-                    (lambda (x) (>= x 10))
-                    (list 0 2 10 4 7 20 3 1)))
-            (sum (map
-                    (lambda (x) (if (<= x 20) x 0))
-                    (list 100 25 10 411 75 20 35 1000)))
-        )
-    )
+    (eq? 10 10)
+
+    ; (list
+    ;     (fact 6)
+    ;     (fib 6)
+    ;     (fact (fib 6))
+    ;     (length (list 1 2 3 4 5))
+    ;     (length-iter (list 1 2 3 4 5) 0)
+    ;     (tail-call-demo 10)
+    ;     ;; bunch of silly ways to get 30
+    ;     (list
+    ;         30
+    ;         (+ 10 20)
+    ;         (+ (* 2 5) 20)
+    ;         (+ 10 (* 4 5))
+    ;         (+ (* 2 5) (* 4 5))
+    ;         (+ (* 2 (- 9 4)) (* 4 5))
+    ;         (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
+    ;         (adder 10 20)
+    ;         (adder (double 5) 20)
+    ;         (adder 10 (* (double 2) 5))
+    ;         (adder (fib 6) 22)
+    ;         (adder (fib 8) (+ 1 (double 4)))
+    ;         (- (fact 6) (+ (* (fact 3) 100) 90))
+    ;         ((lambda (n m) (+ n m)) 10 20)
+    ;         ((lambda (f n m) (f n m)) + 10 20)
+    ;         (+ (length (list 0 1 2 3 4 5 6 7 8 9)) 20)
+    ;         (length (range 1 30))
+    ;         (+ (length (range 1 10)) (length (range 1 (* 4 5))))
+    ;         (+ (product (list 2 1 5)) (sum (list 2 4 6 8)))
+    ;         (sum (list 4 (fib 8) (- (fact 3) 1)))
+    ;         (+ (sum (range 0 (fib 6))) (- 2 8))
+    ;         (sum (grep
+    ;                 (lambda (x) (>= x 10))
+    ;                 (list 0 2 10 4 7 20 3 1)))
+    ;         (sum (map
+    ;                 (lambda (x) (if (<= x 20) x 0))
+    ;                 (list 100 25 10 411 75 20 35 1000)))
+    ;     )
+    ; )
 
 ];
 
