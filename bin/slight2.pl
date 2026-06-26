@@ -3,21 +3,17 @@ use v5.42;
 use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
-#use Test::More;
 use Data::Dumper qw[ Dumper ];
 
 ## -----------------------------------------------------------------------------
 ## TODO
 ## -----------------------------------------------------------------------------
-## - use the DEBUG flag
-## - add a Bind term, similar to Condition
+## - improve on debugger UX
 ## -----------------------------------------------------------------------------
 
-use constant DEBUG => $ENV{DEBUG} // 0;
-
 # this is for debugging stuff
-use Term::ReadKey ();
-our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
+use Term::ReadKey (); our $WIDTH = (Term::ReadKey::GetTerminalSize)[0];
+use constant DEBUG => $ENV{DEBUG} // 0;
 
 ## -----------------------------------------------------------------------------
 
@@ -34,6 +30,7 @@ class Term {
             when ('Error')     { $self->msg eq $other->msg }
             when ('Env')       { refaddr $self == refaddr $other }
             when ('Condition') { refaddr $self == refaddr $other }
+            when ('Binding')   { refaddr $self == refaddr $other }
             when ('Cons')      {
                 $self->head->is_equal_to( $other->head )
                     &&  $self->tail->is_equal_to( $other->tail )
@@ -62,6 +59,7 @@ class Term {
             when ('BuiltIn')   { sprintf '&<%s>' => $self->name }
             when ('Env')       { '#env' }
             when ('Error')     { sprintf 'ERROR(%s)' => $self->msg }
+            when ('Binding')   { sprintf '(<let> %s %s)' => $self->sym->pprint, $self->value->pprint }
             when ('Condition') {
                 sprintf '(<if> %s %s %s)' => $self->cond->pprint,
                     $self->if_true->pprint,
@@ -74,15 +72,13 @@ class Term {
     }
 }
 
-class Sym     :isa(Term)    { field $ident :reader :param; }
-class Literal :isa(Term)    {}
-class Str     :isa(Literal) { field $raw :reader :param; }
-class Num     :isa(Literal) { field $raw :reader :param; }
-class Bool    :isa(Literal) { field $raw :reader :param; }
-class Error   :isa(Literal) { field $msg :param :reader; }
-class List    :isa(Term)    {}
-class Nil     :isa(List)    { method is_nil { true } }
-class Cons    :isa(List)    {
+class Sym     :isa(Term) { field $ident :reader :param; }
+class Str     :isa(Term) { field $raw :reader :param; }
+class Num     :isa(Term) { field $raw :reader :param; }
+class Bool    :isa(Term) { field $raw :reader :param; }
+class Error   :isa(Term) { field $msg :param :reader; }
+class Nil     :isa(Term) { method is_nil { true } }
+class Cons    :isa(Term) {
     field $head :reader :param;
     field $tail :reader :param;
     method uncons {
@@ -108,21 +104,26 @@ class Env :isa(Term) {
 
 ## compiled forms ...
 
-class Lambda :isa(Literal) {
+class Lambda :isa(Term) {
     field $params :reader :param;
     field $body   :reader :param;
     field $env    :reader :param;
 }
 
-class BuiltIn :isa(Literal) {
+class BuiltIn :isa(Term) {
     field $name :reader :param;
     field $body :reader :param;
 }
 
-class Condition :isa(Literal) {
+class Condition :isa(Term) {
     field $cond     :reader :param;
     field $if_true  :reader :param;
     field $if_false :reader :param;
+}
+
+class Binding :isa(Term) {
+    field $sym   :reader :param;
+    field $value :reader :param;
 }
 
 ## -----------------------------------------------------------------------------
@@ -144,6 +145,7 @@ class Allocator {
     method Lambda    ($p, $b, $e) { Lambda->new( params => $p, body => $b, env => $e ) }
     method BuiltIn   ($n, $b)     { BuiltIn->new( name => $n, body => $b ) }
     method Condition ($c, $t, $f) { Condition->new( cond => $c, if_true => $t, if_false => $f ) }
+    method Binding   ($s, $v)     { Binding->new( sym => $s, value => $v ) }
     # ... list utils
     method Map ($f, $list) { $self->List( map { $f->($_) } $list->uncons ) }
     method Reverse ($list) { $self->List( reverse $list->uncons ) }
@@ -207,37 +209,24 @@ class Parser {
     method find_next_token {
         my $next = $self->advance;
         given ($next) {
-            when (/\s/) {
-                $self->skip_whitespace;
-            }
-            when (';') {
-                $self->skip_until_newline;
-            }
-            when ('(') {
-                push @tokens => +[];
-            }
-            when (')') {
-                my $list = pop @tokens;
-                $self->push_stack( $alloc->List( @$list ) );
-            }
-            when (/[0-9]/) {
-                $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) );
-            }
-            when ('"') {
-                $self->push_stack( $alloc->Str( $self->parse_string( $next ) ) );
-            }
-            when ('-') {
-                if ($self->peek =~ /[0-9]/) {
-                    $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) );
-                } else {
-                    $self->push_stack( $alloc->Sym( $self->parse_symbol( $next ) ) );
-                }
+            when (/\s/)    { $self->skip_whitespace }
+            when (';')     { $self->skip_until_newline }
+            when ('(')     { push @tokens => +[] }
+            when (')')     { $self->push_stack( $alloc->List( @{ pop @tokens } ) ) }
+            when (/[0-9]/) { $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) ) }
+            when ('"')     { $self->push_stack( $alloc->Str( $self->parse_string( $next ) ) ) }
+            when ('-')     { $self->peek =~ /[0-9]/
+                ? $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) )
+                : $self->push_stack( $alloc->Sym( $self->parse_symbol( $next ) ) )
             }
             when ('#') {
-                given ($self->advance) {
-                    when ('t') { $self->push_stack( $alloc->True ) }
-                    when ('f') { $self->push_stack( $alloc->False ) }
-                    when ('n') { $self->push_stack( $alloc->Nil ) }
+                given ($self->peek) {
+                    when ('t') { $self->advance; $self->push_stack( $alloc->True ) }
+                    when ('f') { $self->advance; $self->push_stack( $alloc->False ) }
+                    when ('n') { $self->advance; $self->push_stack( $alloc->Nil ) }
+                    default {
+                        $self->push_stack( $alloc->Sym( $self->parse_symbol( $next ) ) );
+                    }
                 }
             }
             default {
@@ -311,6 +300,13 @@ class Compiler {
                             $env->bind( $name, $f );
                             return $alloc->Nil;
                         }
+                        when ('let') {
+                            my ($sym, $value_expr) = $expr->tail->uncons;
+                            return $alloc->Binding(
+                                $sym,
+                                $self->compile_expr( $value_expr, $env ),
+                            );
+                        }
                     }
                 }
                 return $alloc->Map(sub ($e) { $self->compile_expr( $e, $env ) }, $expr )
@@ -327,6 +323,7 @@ class Compiler {
 package Kontinue::HALT  {}
 package Kontinue::ERROR {}
 package Kontinue::COND  {}
+package Kontinue::BIND  {}
 package Kontinue::LEAVE {}
 package Kontinue::APPLY {}
 package Kontinue::EVAL_EXPR {}
@@ -359,6 +356,7 @@ class Interpreter {
         ::DEBUG && say sprintf '> EVAL : %s' => $expr->pprint;
         given (blessed $expr) {
             when ('Condition') { $self->conditional   ( $expr, $env, $kont ) }
+            when ('Binding')   { $self->bind_symbol   ( $expr, $env, $kont ) }
             when ('Cons')      { $self->evaluate_head ( $expr, $env, $kont ) }
             when ('Sym')       { $self->resolve_symbol( $expr, $env, $kont ) }
             default            { $self->return_value  ( $expr, $env, $kont ) }
@@ -407,6 +405,13 @@ class Interpreter {
             return $self->throw_error("Expected a Bool, got (".$c->pprint.")")
                 unless $c isa Bool;
             return ($c->raw ? $expr->if_true : $expr->if_false), $e, $kont;
+        }
+    }
+
+    method bind_symbol ($bind, $env, $kont) {
+        return $bind->value, $env, kontinue BIND => sub ($c, $e) {
+            $e->bind( $bind->sym, $c );
+            return $alloc->Nil, $e, $kont;
         }
     }
 
@@ -530,6 +535,9 @@ my $source = q[
     (defun product (lst)
         (reduce 1 (lambda (n acc) (* acc n)) lst))
 
+    (let $x 30)
+    (let $f (lambda (n m) (+ n m)))
+
     (list
         (fact 6)
         (fib 6)
@@ -546,6 +554,9 @@ my $source = q[
             (+ (* 2 5) (* 4 5))
             (+ (* 2 (- 9 4)) (* 4 5))
             (+ (* 2 (- 9 4)) (* 4 (+ 4 1)))
+            $x
+            ($f 10 20)
+            ($f 10 ($f 10 10))
             (adder 10 20)
             (adder (double 5) 20)
             (adder 10 (* (double 2) 5))
