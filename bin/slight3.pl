@@ -10,16 +10,18 @@ package Term {
     sub is_nil ($)     { false }
     sub type   ($self) { $self->[0] }
     sub data   ($self) { $self->[1] }
-    sub pprint ($self) {
+    sub pprint ($self, $depth=0) {
+        my $indent = '';
+        $indent = '  ' x $depth if $depth;
         given ($self->type) {
-            when ('Sym')    { $self->ident }
-            when ('Str')    { '"'.$self->value.'"' }
-            when ('Num')    { $self->value }
-            when ('Bool')   { $self->value ? '#true' : '#false' }
-            when ('Nil')    { '()' }
-            when ('Cons')   { sprintf '(%s)' => join ' ' => map { $_->pprint } $self->uncons }
-            when ('Pair')   { sprintf '<%s . %s>' => $self->fst->pprint, $self->snd->pprint }
-            when ('Lambda') { sprintf '(<lambda> %s %s)' => $self->params->pprint, $self->body->pprint }
+            when ('Sym')    {  $self->ident }
+            when ('Str')    {  '"'.$self->value.'"' }
+            when ('Num')    {  $self->value }
+            when ('Bool')   {  $self->value ? '#true' : '#false' }
+            when ('Nil')    {  '()' }
+            when ('Cons')   { sprintf '(%s %s)' => $self->head->pprint($depth), $self->tail->pprint($depth) }
+            when ('Pair')   { sprintf "<%s :\n%s\n>" => $self->fst->pprint($depth), $self->snd->pprint($depth + 1) }
+            when ('Lambda') { sprintf "(<lambda> %s %s)" => $self->params->pprint($depth), $self->body->pprint($depth) }
             default { die "Cannot ->pprint a (".(join ', ' => @$self).")" }
         }
     }
@@ -92,16 +94,16 @@ sub Tag ($tag, $body) { Pair( Sym($tag), $body ) }
 
 sub isTagged ($t) { isPair($t) && isSym($t->fst) }
 
-sub RETURN ($val)         { Tag(RETURN => $val) }
-sub CONS   ($h, $t)       { Tag(CONS   => Cons( $h, $t )) }
-sub CAR    ($list)        { Tag(CAR    => $list) }
-sub CDR    ($list)        { Tag(CDR    => $list) }
-sub LOOKUP ($sym)         { Tag(LOOKUP => $sym) }
-sub DEFINE ($sym, $val)   { Tag(DEFINE => Pair($sym, $val)) }
-sub COND   ($c, $t, $f)   { Tag(COND   => Pair($c, Pair($t, $f))) }
-sub EHEAD  ($list)        { Tag(EHEAD  => $list) }
-sub EARGS  ($list, $done) { Tag(EARGS  => Pair($list, $done)) }
-sub APPLY  ($call)        { Tag(APPLY  => $call) }
+sub RETURN ($val)           { Tag(RETURN => $val) }
+sub CONS   ($h, $t)         { Tag(CONS   => Cons( $h, $t )) }
+sub CAR    ($list)          { Tag(CAR    => $list) }
+sub CDR    ($list)          { Tag(CDR    => $list) }
+sub LOOKUP ($sym, $E)       { Tag(LOOKUP => Pair($sym, $E)) }
+sub DEFINE ($E)             { Tag(DEFINE => $E) }
+sub COND   ($c, $t, $f)     { Tag(COND   => Pair($c, Pair($t, $f))) }
+sub EHEAD  ($list)          { Tag(EHEAD  => $list) }
+sub EARGS  ($list, $done)   { Tag(EARGS  => Pair($list, $done)) }
+sub APPLY  ($call)          { Tag(APPLY  => $call) }
 
 sub isRETURN ($e) { isTagged($e) && $e->fst->ident eq 'RETURN' }
 sub isCONS   ($e) { isTagged($e) && $e->fst->ident eq 'CONS'   }
@@ -233,13 +235,19 @@ class Compiler {
 
     method compile_defun ($expr) {
         my ($name, $params, $body) = $expr->tail->uncons;
-        my $lambda = ::Lambda(
-            $params,
-            $self->compile_expr( $body ),
-            $scope,
-        );
-        $scope = ::Cons( ::Pair( $name, $lambda ), $scope );
-        return ::DEFINE( $name, $lambda );
+        return ::DEFINE(
+            $scope = ::Cons(
+                ::Pair(
+                    $name,
+                    ::Lambda(
+                        $params,
+                        $self->compile_expr( $body ),
+                        $scope,
+                    )
+                ),
+                $scope
+            )
+        )
     }
 
     method compile_expr ($expr) {
@@ -247,7 +255,7 @@ class Compiler {
 
         unless (::isTagged($expr)) {
             return ::RETURN( $expr )                       if ::isLiteral($expr);
-            return ::LOOKUP( $expr )                       if ::isSym($expr);
+            return ::LOOKUP( $expr, $scope )               if ::isSym($expr);
             return $self->compile_defun( $expr )           if ::isSpecial(defun => $expr);
             return $self->compile_cond( $expr )            if ::isSpecial(if    => $expr);
             return $self->compile_list( $expr )            if ::isSpecial(list  => $expr);
@@ -285,7 +293,8 @@ my $p = Parser->new;
 my $c = Compiler->new;
 
 my $parsed = $p->parse(q[
-    (defun adder (x y) (+ x y))
+    (defun adder  (x y) (+ x y))
+    (defun double (x)   (adder x x))
 
     (list 1 2 3 4 5)
 
@@ -295,8 +304,8 @@ my $parsed = $p->parse(q[
 my $compiled = $c->compile( $parsed );
 
 say 'parsed :';
-say '  ',$_->pprint foreach @$parsed;
+say $_->pprint foreach @$parsed;
 say 'compiled :';
-say '  ',$_->pprint foreach @$compiled;
+say $_->pprint foreach @$compiled;
 
 
