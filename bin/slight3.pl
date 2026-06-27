@@ -4,6 +4,8 @@ use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 use Data::Dumper qw[ Dumper ];
 
+use constant DEBUG => $ENV{DEBUG} // 0;
+
 package Term {
     sub is_nil ($)     { false }
     sub type   ($self) { $self->[0] }
@@ -17,6 +19,7 @@ package Term {
             when ('Nil')    { '()' }
             when ('Cons')   { sprintf '(%s)' => join ' ' => map { $_->pprint } $self->uncons }
             when ('Pair')   { sprintf '<%s . %s>' => $self->fst->pprint, $self->snd->pprint }
+            when ('Lambda') { sprintf '(<lambda> %s %s)' => $self->params->pprint, $self->body->pprint }
             default { die "Cannot ->pprint a (".(join ', ' => @$self).")" }
         }
     }
@@ -46,18 +49,24 @@ package Term::Cons  { our @ISA; BEGIN { @ISA = ('Term') }
     sub tail   ($self) { $self->data->[1] }
     sub uncons ($self) { $self->head, ($self->tail->is_nil ? () : $self->tail->uncons) }
 }
+package Term::Lambda  { our @ISA; BEGIN { @ISA = ('Term') }
+    sub params ($self) { $self->data->[0] }
+    sub body   ($self) { $self->data->[1] }
+    sub env    ($self) { $self->data->[2] }
+}
 
 sub Term  ($t, @p)     { bless [ $t => \@p ] => 'Term::'.$t }
 
-sub Sym   ($s)         { Term(Sym  => $s) }
-sub Bool  ($b)         { Term(Bool => $b) }
-sub Num   ($n)         { Term(Num  => $n) }
-sub Str   ($s)         { Term(Str  => $s) }
-sub True  ()           { Bool(true)  }
-sub False ()           { Bool(false) }
-sub Nil   ()           { Term('Nil') }
-sub Pair  ($f, $s)     { Term(Pair => $f, $s) }
-sub Cons  ($h, $t=Nil) { Term(Cons => $h, $t) }
+sub Sym   ($s)          { Term(Sym  => $s) }
+sub Bool  ($b)          { Term(Bool => $b) }
+sub Num   ($n)          { Term(Num  => $n) }
+sub Str   ($s)          { Term(Str  => $s) }
+sub True  ()            { Bool(true)  }
+sub False ()            { Bool(false) }
+sub Nil   ()            { Term('Nil') }
+sub Pair  ($f, $s)      { Term(Pair => $f, $s) }
+sub Cons  ($h, $t=Nil)  { Term(Cons => $h, $t) }
+sub Lambda ($p, $b, $e) { Term(Lambda => $p, $b, $e) }
 
 sub List (@items) {
     my $list = Nil;
@@ -77,18 +86,30 @@ sub isPair    ($t) { $t->type eq 'Pair' }
 
 sub isLiteral ($t) { isNum($t) || isStr($t) || isBool($t) }
 
+sub isSpecial ($i, $t) { isCons($t) && isSym($t->head) && $t->head->ident eq $i }
+
 sub Tag ($tag, $body) { Pair( Sym($tag), $body ) }
 
 sub isTagged ($t) { isPair($t) && isSym($t->fst) }
 
-sub RETURN ($value)       { Tag(RETURN => $value) }
-sub LOOKUP ($symbol)      { Tag(LOOKUP => $symbol) }
+sub RETURN ($val)         { Tag(RETURN => $val) }
+sub CONS   ($h, $t)       { Tag(CONS   => Cons( $h, $t )) }
+sub CAR    ($list)        { Tag(CAR    => $list) }
+sub CDR    ($list)        { Tag(CDR    => $list) }
+sub LOOKUP ($sym)         { Tag(LOOKUP => $sym) }
+sub DEFINE ($sym, $val)   { Tag(DEFINE => Pair($sym, $val)) }
+sub COND   ($c, $t, $f)   { Tag(COND   => Pair($c, Pair($t, $f))) }
 sub EHEAD  ($list)        { Tag(EHEAD  => $list) }
 sub EARGS  ($list, $done) { Tag(EARGS  => Pair($list, $done)) }
 sub APPLY  ($call)        { Tag(APPLY  => $call) }
 
 sub isRETURN ($e) { isTagged($e) && $e->fst->ident eq 'RETURN' }
+sub isCONS   ($e) { isTagged($e) && $e->fst->ident eq 'CONS'   }
+sub isCAR    ($e) { isTagged($e) && $e->fst->ident eq 'CAR'    }
+sub isCDR    ($e) { isTagged($e) && $e->fst->ident eq 'CDR'    }
 sub isLOOKUP ($e) { isTagged($e) && $e->fst->ident eq 'LOOKUP' }
+sub isDEFINE ($e) { isTagged($e) && $e->fst->ident eq 'DEFINE' }
+sub isCOND   ($e) { isTagged($e) && $e->fst->ident eq 'COND'   }
 sub isEHEAD  ($e) { isTagged($e) && $e->fst->ident eq 'EHEAD'  }
 sub isEARGS  ($e) { isTagged($e) && $e->fst->ident eq 'EARGS'  }
 sub isAPPLY  ($e) { isTagged($e) && $e->fst->ident eq 'APPLY'  }
@@ -180,46 +201,102 @@ class Parser {
     }
 }
 
-sub compile ($expr) {
-    say $expr->pprint;
+class Compiler {
+    field $scope :reader = ::Nil;
 
-    unless (isTagged($expr)) {
-        return RETURN( $expr )           if isLiteral($expr);
-        return LOOKUP( $expr )           if isSym($expr);
-        return compile( EHEAD( $expr ) ) if isCons($expr);
-        die "WTF! ".$expr->pprint;
+    method compile ($exprs) {
+        +[ grep !$_->is_nil, map $self->compile_expr($_), @$exprs ]
     }
 
-    if (isEHEAD($expr)) {
-        my $list = $expr->snd;
-        return compile( EARGS( Cons( compile( $list->head ), Nil), $list->tail ) )
+    method compile_cond ($expr) {
+        my ($cond, $if_true, $if_false) = $expr->tail->uncons;
+        return ::COND(
+            $self->compile_expr($cond),
+            $self->compile_expr($if_true),
+            $self->compile_expr($if_false),
+        )
     }
-    elsif (isEARGS($expr)) {
-        my $done = $expr->snd->fst;
-        my $rest = $expr->snd->snd;
-        if (isNil($rest)) {
-            return compile( APPLY( $done ) )
+
+    method compile_list ($expr) {
+        return ::RETURN( $self->compile_list_body( $expr->tail ) )
+    }
+
+    method compile_list_body ($list) {
+        return ::Cons( ::RETURN( ::Nil ), ::Nil ) if $list->is_nil;
+        return ::Cons(
+            ::CONS(
+                $self->compile_expr( $list->head ),
+                $self->compile_list_body( $list->tail ),
+            )
+        )
+    }
+
+    method compile_defun ($expr) {
+        my ($name, $params, $body) = $expr->tail->uncons;
+        my $lambda = ::Lambda(
+            $params,
+            $self->compile_expr( $body ),
+            $scope,
+        );
+        $scope = ::Cons( ::Pair( $name, $lambda ), $scope );
+        return ::DEFINE( $name, $lambda );
+    }
+
+    method compile_expr ($expr) {
+        ::DEBUG && say $expr->pprint;
+
+        unless (::isTagged($expr)) {
+            return ::RETURN( $expr )                       if ::isLiteral($expr);
+            return ::LOOKUP( $expr )                       if ::isSym($expr);
+            return $self->compile_defun( $expr )           if ::isSpecial(defun => $expr);
+            return $self->compile_cond( $expr )            if ::isSpecial(if    => $expr);
+            return $self->compile_list( $expr )            if ::isSpecial(list  => $expr);
+            return $self->compile_expr( ::EHEAD( $expr ) ) if ::isCons($expr);
+            die "WTF! ".$expr->pprint;
+        }
+
+        if (::isEHEAD($expr)) {
+            my $list = $expr->snd;
+            return $self->compile_expr(
+                ::EARGS( ::Cons( $self->compile_expr( $list->head ), ::Nil), $list->tail ) )
+        }
+        elsif (::isEARGS($expr)) {
+            my $done = $expr->snd->fst;
+            my $rest = $expr->snd->snd;
+            if (::isNil($rest)) {
+                return $self->compile_expr( ::APPLY( $done ) )
+            }
+            else {
+                return $self->compile_expr(
+                    ::EARGS( ::Cons( $self->compile_expr( $rest->head ), $done ), $rest->tail ) )
+            }
+        }
+        elsif (::isAPPLY($expr)) {
+            return $expr;
         }
         else {
-            return compile( EARGS( Cons( compile( $rest->head ), $done ), $rest->tail ) )
+            die "WTF! is ".$expr->pprint;
         }
-    }
-    elsif (isAPPLY($expr)) {
-        return $expr;
-    }
-    else {
-        die "WTF! is ".$expr->pprint;
     }
 }
 
+
 my $p = Parser->new;
+my $c = Compiler->new;
 
-my ($expr) = $p->parse(q[
-    (+ 10 (* 4 5))
-])->@*;
+my $parsed = $p->parse(q[
+    (defun adder (x y) (+ x y))
 
+    (list 1 2 3 4 5)
 
-say 'parsed   : ', $expr->pprint;
-say 'compiled : ', compile($expr)->pprint;
+    (+ 10 20)
+]);
+
+my $compiled = $c->compile( $parsed );
+
+say 'parsed :';
+say '  ',$_->pprint foreach @$parsed;
+say 'compiled :';
+say '  ',$_->pprint foreach @$compiled;
 
 
