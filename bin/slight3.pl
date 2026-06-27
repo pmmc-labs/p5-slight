@@ -219,7 +219,7 @@ my ($expr) = $p->parse(q[
 ])->@*;
 
 
-say 'parsed: ', $expr->pprint;
-say compile($expr)->pprint;
+say 'parsed   : ', $expr->pprint;
+say 'compiled : ', compile($expr)->pprint;
 
 
