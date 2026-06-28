@@ -20,7 +20,7 @@ package Term {
             when ('Bool')    { $self->value ? '#true' : '#false' }
             when ('Nil')     { '()' }
             when ('Cons')    { sprintf '(%s)' => join ' ' => map $_->pprint($depth), $self->uncons }
-            when ('Pair')    { sprintf ":%s => %s" => $self->fst->pprint($depth), $self->snd->pprint($depth + 1) }
+            when ('Pair')    { sprintf "[%s : %s]" => $self->fst->pprint($depth), $self->snd->pprint($depth + 1) }
             when ('Lambda')  { sprintf "(<lambda> %s %s)" => $self->params->pprint($depth), $self->body->pprint($depth + 1) }
             when ('Builtin') { sprintf "#<%>" => $self->name }
             default { die "Cannot ->pprint a (".(join ', ' => @$self).")" }
@@ -90,6 +90,7 @@ sub isTrue    ($t) { $t->type eq 'Bool' && $t->value }
 sub isFalse   ($t) { $t->type eq 'Bool' && !$t->value }
 sub isNil     ($t) { $t->type eq 'Nil' }
 sub isCons    ($t) { $t->type eq 'Cons' }
+sub isPair    ($t) { $t->type eq 'Pair' }
 sub isLambda  ($t) { $t->type eq 'Lambda' }
 sub isBuiltin ($t) { $t->type eq 'Builtin' }
 
@@ -103,7 +104,7 @@ sub isTagged ($t) { isPair($t) && isSym($t->fst) }
 
 sub DEFINE ($E)             { Tag(DEFINE => $E) }
 sub RETURN ($val)           { Tag(RETURN => $val) }
-sub CONS   ($h, $t)         { Tag(CONS   => Cons( $h, $t )) }
+sub CONS   ($h, $t)         { Tag(CONS   => Pair( $h, $t )) }
 sub CAR    ($list)          { Tag(CAR    => $list) }
 sub CDR    ($list)          { Tag(CDR    => $list) }
 sub LOOKUP ($sym)           { Tag(LOOKUP => $sym) }
@@ -259,9 +260,9 @@ class Compiler {
 
     method compile_lookup ( $expr ) {
         given ($expr->ident) {
-            when ('+') {
-                return ::RETURN( :: );
-            }
+            #when ('+') {
+            #    return ::RETURN( ::Nil );
+            #}
             default {
                 return ::LOOKUP( $expr );
             }
@@ -306,15 +307,33 @@ class Compiler {
     }
 }
 
+sub traverse ($e, $f, $d=0) {
+    if (isPair($e)) {
+        traverse($e->fst, $f, $d);
+        traverse($e->snd, $f, $d+1);
+    }
+    elsif (isCons($e)) {
+        traverse($e->head, $f, $d);
+        traverse($e->tail, $f, $d) unless $e->tail->is_nil;
+    }
+    elsif (isLambda($e)) {
+        $f->($e->params, $d);
+        traverse($e->body, $f, $d+1) unless $e->body->is_nil;
+    }
+    else {
+        $f->($e, $d);
+    }
+}
+
 
 my $p = Parser->new;
 my $c = Compiler->new;
 
 my $parsed = $p->parse(q[
-    ;(defun adder  (x y) (+ x y))
-    ;(defun double (x) (adder x x))
+    (defun adder  (x y) (+ x y))
+    (defun double (x) (adder x x))
 
-    (list 1 2 (+ 3 4) 5)
+    (list 1 2 3)
 ]);
 
 my $compiled = $c->compile( $parsed );
@@ -323,5 +342,21 @@ say 'parsed :';
 say $_->pprint foreach @$parsed;
 say 'compiled :';
 say $_->pprint foreach @$compiled;
+
+say "";
+say "traverse ...\n";
+foreach my $c (@$compiled) {
+    traverse($c, sub ($e, $d) {
+        my $indent = ''; $indent = '  ' x $d if $d > 0;
+        say $indent, $e->pprint;
+    });
+}
+
+
+
+
+
+
+
 
 
