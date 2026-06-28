@@ -12,16 +12,17 @@ package Term {
     sub data   ($self) { $self->[1] }
     sub pprint ($self, $depth=0) {
         my $indent = '';
-        $indent = '  ' x $depth if $depth;
+        $indent = '    ' x $depth if $depth;
         given ($self->type) {
-            when ('Sym')    {  $self->ident }
-            when ('Str')    {  '"'.$self->value.'"' }
-            when ('Num')    {  $self->value }
-            when ('Bool')   {  $self->value ? '#true' : '#false' }
-            when ('Nil')    {  '()' }
-            when ('Cons')   { sprintf '(%s %s)' => $self->head->pprint($depth), $self->tail->pprint($depth) }
-            when ('Pair')   { sprintf "<%s :\n%s\n>" => $self->fst->pprint($depth), $self->snd->pprint($depth + 1) }
-            when ('Lambda') { sprintf "(<lambda> %s %s)" => $self->params->pprint($depth), $self->body->pprint($depth) }
+            when ('Sym')     { $self->ident }
+            when ('Str')     { '"'.$self->value.'"' }
+            when ('Num')     { $self->value }
+            when ('Bool')    { $self->value ? '#true' : '#false' }
+            when ('Nil')     { '()' }
+            when ('Cons')    { sprintf '(%s)' => join ' ' => map $_->pprint($depth), $self->uncons }
+            when ('Pair')    { sprintf ":%s => %s" => $self->fst->pprint($depth), $self->snd->pprint($depth + 1) }
+            when ('Lambda')  { sprintf "(<lambda> %s %s)" => $self->params->pprint($depth), $self->body->pprint($depth + 1) }
+            when ('Builtin') { sprintf "#<%>" => $self->name }
             default { die "Cannot ->pprint a (".(join ', ' => @$self).")" }
         }
     }
@@ -56,19 +57,24 @@ package Term::Lambda  { our @ISA; BEGIN { @ISA = ('Term') }
     sub body   ($self) { $self->data->[1] }
     sub env    ($self) { $self->data->[2] }
 }
+package Term::Builtin  { our @ISA; BEGIN { @ISA = ('Term') }
+    sub name   ($self) { $self->data->[0] }
+    sub body   ($self) { $self->data->[1] }
+}
 
 sub Term  ($t, @p)     { bless [ $t => \@p ] => 'Term::'.$t }
 
-sub Sym   ($s)          { Term(Sym  => $s) }
-sub Bool  ($b)          { Term(Bool => $b) }
-sub Num   ($n)          { Term(Num  => $n) }
-sub Str   ($s)          { Term(Str  => $s) }
-sub True  ()            { Bool(true)  }
-sub False ()            { Bool(false) }
-sub Nil   ()            { Term('Nil') }
-sub Pair  ($f, $s)      { Term(Pair => $f, $s) }
-sub Cons  ($h, $t=Nil)  { Term(Cons => $h, $t) }
-sub Lambda ($p, $b, $e) { Term(Lambda => $p, $b, $e) }
+sub Sym     ($s)         { Term(Sym  => $s) }
+sub Bool    ($b)         { Term(Bool => $b) }
+sub Num     ($n)         { Term(Num  => $n) }
+sub Str     ($s)         { Term(Str  => $s) }
+sub True    ()           { Bool(true)  }
+sub False   ()           { Bool(false) }
+sub Nil     ()           { Term('Nil') }
+sub Pair    ($f, $s)     { Term(Pair => $f, $s) }
+sub Cons    ($h, $t=Nil) { Term(Cons => $h, $t) }
+sub Lambda  ($p, $b, $e) { Term(Lambda => $p, $b, $e) }
+sub Builtin ($n, $b)     { Term(Builtin => $n, $b) }
 
 sub List (@items) {
     my $list = Nil;
@@ -84,7 +90,8 @@ sub isTrue    ($t) { $t->type eq 'Bool' && $t->value }
 sub isFalse   ($t) { $t->type eq 'Bool' && !$t->value }
 sub isNil     ($t) { $t->type eq 'Nil' }
 sub isCons    ($t) { $t->type eq 'Cons' }
-sub isPair    ($t) { $t->type eq 'Pair' }
+sub isLambda  ($t) { $t->type eq 'Lambda' }
+sub isBuiltin ($t) { $t->type eq 'Builtin' }
 
 sub isLiteral ($t) { isNum($t) || isStr($t) || isBool($t) }
 
@@ -94,23 +101,23 @@ sub Tag ($tag, $body) { Pair( Sym($tag), $body ) }
 
 sub isTagged ($t) { isPair($t) && isSym($t->fst) }
 
+sub DEFINE ($E)             { Tag(DEFINE => $E) }
 sub RETURN ($val)           { Tag(RETURN => $val) }
 sub CONS   ($h, $t)         { Tag(CONS   => Cons( $h, $t )) }
 sub CAR    ($list)          { Tag(CAR    => $list) }
 sub CDR    ($list)          { Tag(CDR    => $list) }
-sub LOOKUP ($sym, $E)       { Tag(LOOKUP => Pair($sym, $E)) }
-sub DEFINE ($E)             { Tag(DEFINE => $E) }
+sub LOOKUP ($sym)           { Tag(LOOKUP => $sym) }
 sub COND   ($c, $t, $f)     { Tag(COND   => Pair($c, Pair($t, $f))) }
 sub EHEAD  ($list)          { Tag(EHEAD  => $list) }
 sub EARGS  ($list, $done)   { Tag(EARGS  => Pair($list, $done)) }
 sub APPLY  ($call)          { Tag(APPLY  => $call) }
 
+sub isDEFINE ($e) { isTagged($e) && $e->fst->ident eq 'DEFINE' }
 sub isRETURN ($e) { isTagged($e) && $e->fst->ident eq 'RETURN' }
 sub isCONS   ($e) { isTagged($e) && $e->fst->ident eq 'CONS'   }
 sub isCAR    ($e) { isTagged($e) && $e->fst->ident eq 'CAR'    }
 sub isCDR    ($e) { isTagged($e) && $e->fst->ident eq 'CDR'    }
 sub isLOOKUP ($e) { isTagged($e) && $e->fst->ident eq 'LOOKUP' }
-sub isDEFINE ($e) { isTagged($e) && $e->fst->ident eq 'DEFINE' }
 sub isCOND   ($e) { isTagged($e) && $e->fst->ident eq 'COND'   }
 sub isEHEAD  ($e) { isTagged($e) && $e->fst->ident eq 'EHEAD'  }
 sub isEARGS  ($e) { isTagged($e) && $e->fst->ident eq 'EARGS'  }
@@ -250,12 +257,23 @@ class Compiler {
         )
     }
 
+    method compile_lookup ( $expr ) {
+        given ($expr->ident) {
+            when ('+') {
+                return ::RETURN( :: );
+            }
+            default {
+                return ::LOOKUP( $expr );
+            }
+        }
+    }
+
     method compile_expr ($expr) {
         ::DEBUG && say $expr->pprint;
 
         unless (::isTagged($expr)) {
             return ::RETURN( $expr )                       if ::isLiteral($expr);
-            return ::LOOKUP( $expr, $scope )               if ::isSym($expr);
+            return $self->compile_lookup( $expr )          if ::isSym($expr);
             return $self->compile_defun( $expr )           if ::isSpecial(defun => $expr);
             return $self->compile_cond( $expr )            if ::isSpecial(if    => $expr);
             return $self->compile_list( $expr )            if ::isSpecial(list  => $expr);
@@ -293,12 +311,10 @@ my $p = Parser->new;
 my $c = Compiler->new;
 
 my $parsed = $p->parse(q[
-    (defun adder  (x y) (+ x y))
-    (defun double (x)   (adder x x))
+    ;(defun adder  (x y) (+ x y))
+    ;(defun double (x) (adder x x))
 
-    (list 1 2 3 4 5)
-
-    (+ 10 20)
+    (list 1 2 (+ 3 4) 5)
 ]);
 
 my $compiled = $c->compile( $parsed );
