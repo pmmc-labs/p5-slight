@@ -13,11 +13,11 @@ use Digest::MD5 ();
 
 class Term {
     field $index :param :reader;
-    field $hash  :param :reader;
     field $data  :param :reader;
-
     method is_nil { false }
+    method is_equal_to ($o) { $index->hash == $o->index->hash }
 }
+
 class Sym     :isa(Term) { method ident { $self->data->[0] } }
 class Str     :isa(Term) { method value { $self->data->[0] } }
 class Num     :isa(Term) { method value { $self->data->[0] } }
@@ -28,9 +28,114 @@ class Cons    :isa(Term) {
     method tail { $self->data->[1] }
 }
 
+# Env is a list of pairs
+class Env :isa(Cons) {}
+
+# Pair is a cons where tail is not a list
+class Pair :isa(Cons) {
+    method first  { $self->head }
+    method second { $self->tail }
+}
+
+class Lambda :isa(Term) {
+    method params { $self->data->[0] }
+    method body   { $self->data->[1] }
+    method env    { $self->data->[2] }
+}
+
 ## -----------------------------------------------------------------------------
 
-class Index { field $idx :param :reader; }
+class Allocator::Env::Util {
+    field $alloc :param :reader;
+
+    method init_env (@bindings) {
+        my $env = $alloc->Nil;
+        foreach my ($sym, $val) (@bindings) {
+            $env = $alloc->Env( $alloc->Pair( $sym, $val ), $env );
+        }
+        return $env;
+    }
+
+    method bind_symbol ($sym, $val, $env) {
+        $alloc->Env( $alloc->Pair( $sym, $val ), $env )
+    }
+
+    method bind_params ($params, $args, $env) {
+        my @params = $alloc->Lists->uncons($params);
+        my @args   = $alloc->Lists->uncons($args);
+        die sprintf 'Arity mismatch, got(%s) expected(%s)' => (scalar @args), (scalar @params)
+            unless scalar @args == scalar @params;
+        my $local = $env;
+        while (@params) {
+            $local = $self->bind_symbol( shift @params, shift @args, $local )
+        }
+        return $local;
+    }
+}
+
+class Allocator::List::Util {
+    field $alloc :param :reader;
+
+    method list_of (@list) {
+        my $list = $alloc->Nil;
+        while (@list) {
+            $list = $alloc->Cons( pop @list, $list );
+        }
+        return $list;
+    }
+
+    method uncons ($list) {
+        my @list;
+        until ($list->is_nil) {
+            push @list => $alloc->deref( $list->head );
+            $list = $alloc->deref( $list->tail );
+        }
+        return @list;
+    }
+}
+
+class Allocator::Util {
+    field $alloc :param :reader;
+
+    method pprint ($t) {
+        given (blessed $t) {
+            when ('Sym')    { $t->ident }
+            when ('Str')    { $t->value }
+            when ('Num')    { $t->value }
+            when ('Bool')   { $t->value }
+            when ('Nil')    { '#nil' }
+            when ('Cons')   { sprintf '(%s)' => join ' ' => map $self->pprint($_), $alloc->Lists->uncons($t) }
+            when ('Pair')   { sprintf '(%s . %s)' => $self->pprint($alloc->deref($t->first)), $self->pprint($alloc->deref($t->second)) }
+            when ('Env')    { sprintf '{ %s }' => join ' ' => map $self->pprint($_), $alloc->Lists->uncons($t) }
+            when ('Lambda') {
+                sprintf '(<lambda> %s %s)' =>
+                    $self->pprint($alloc->deref($t->params)),
+                    $self->pprint($alloc->deref($t->body))
+            }
+            default { die "WTF! $self" }
+        }
+    }
+
+    method DUMP ($t) {
+        sprintf(
+            '$(%05d) | %-6s | %s | %-26s | %s',
+            $t->index->idx,
+            (blessed $t),
+            (substr $t->index->hash, 0, 6),
+            (join ' ' => map {
+                blessed $_
+                    ? (sprintf '$(%05d)' => $_->idx)
+                    : (length $_ > 22 ? (substr($_, 0, 22).' ...') : $_)
+            } $t->data->@*),
+            $self->pprint($t)
+        )
+    }
+}
+
+class Index {
+    field $idx  :param :reader;
+    field $hash :param :reader;
+}
 
 class Allocator {
     field @memory :reader;
@@ -40,17 +145,22 @@ class Allocator {
     field $True;
     field $False;
 
+    field $Utils :reader;
+    field $Lists :reader;
+    field $Envs  :reader;
+
+    method deref ($index) { $memory[ $index->idx ] }
+
     my method intern ($type, @payload) {
         my $hash  = Digest::MD5::md5_hex( join '/' => $type, join ':' => @payload );
-        return $memory[ $intern{ $hash } ] if exists $intern{ $hash };
-        my $index = scalar @memory;
+        return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
+        my $index = Index->new( idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
-            index => Index->new( idx => $index ),
-            hash  => $hash,
+            index => $index,
             data  => [ map blessed $_ ? $_->index : $_, @payload ]
         );
         push @memory => $value;
-        $intern{ $hash } = $index;
+        $intern{$hash} = $index;
         return $value;
     }
 
@@ -58,68 +168,24 @@ class Allocator {
         $Nil   = $self->&intern( Nil  => '#nil'   );
         $True  = $self->&intern( Bool => '#true'  );
         $False = $self->&intern( Bool => '#false' );
+
+        $Utils = Allocator::Util->new( alloc => $self );
+        $Lists = Allocator::List::Util->new( alloc => $self );
+        $Envs  = Allocator::Env::Util->new( alloc => $self );
     }
 
     method Nil   { $Nil }
     method True  { $True }
     method False { $False }
 
-    method Bool ($value) { $value ? $True : $False }
-    method Sym  ($ident) { $self->&intern( Sym  => $ident ) }
-    method Num  ($value) { $self->&intern( Num  => $value ) }
-    method Str  ($value) { $self->&intern( Str  => $value ) }
-    method Cons ($h, $t) { $self->&intern( Cons => $h, $t ) }
-
-    method List (@list) {
-        my $list = $Nil;
-        while (@list) {
-            $list = $self->Cons( pop @list, $list );
-        }
-        return $list;
-    }
-
-    ## ... utils
-
-    method deref ($index) { $memory[ $index->idx ] }
-
-    method uncons ($list) {
-        my @list;
-        until ($list->is_nil) {
-            push @list => $self->deref( $list->head );
-            $list = $self->deref( $list->tail );
-        }
-        return @list;
-    }
-
-    method pprint ($t) {
-        given (blessed $t) {
-            when ('Sym')  { $t->ident }
-            when ('Str')  { $t->value }
-            when ('Num')  { $t->value }
-            when ('Bool') { $t->value }
-            when ('Nil')  { '#nil' }
-            when ('Cons') { sprintf '(%s)' => join ' ' => map { $self->pprint($_) } $self->uncons($t) }
-            default {
-                die "WTF! $self";
-            }
-        }
-    }
-
-    method DUMP ($t) {
-        my $hash = substr($t->hash, 0, 6);
-        sprintf(
-            '$(%05d) | %-5s | %s | %s | %s',
-            $t->index->idx,
-            (blessed $t),
-            ("\e[38;2;".(join ';' => (hex(substr($hash, 0, 2)), hex(substr($hash, 2, 2)), hex(substr($hash, 4, 2))))."m".$hash."\e[0m"),
-            (join ', ' => map {
-                blessed $_
-                    ? (sprintf '$(%05d)' => $_->idx)
-                    : (sprintf '%-18s' => (length $_ > 15 ? (substr($_, 0, 15).'...') : $_))
-            } $t->data->@*),
-            $self->pprint($t)
-        )
-    }
+    method Bool   ($value)     { $value ? $True : $False }
+    method Sym    ($ident)     { $self->&intern( Sym  => $ident ) }
+    method Num    ($value)     { $self->&intern( Num  => $value ) }
+    method Str    ($value)     { $self->&intern( Str  => $value ) }
+    method Cons   ($h, $t)     { $self->&intern( Cons => $h, $t ) }
+    method Pair   ($f, $s)     { $self->&intern( Pair => $f, $s ) }
+    method Env    ($p, $r)     { $self->&intern( Env  => $p, $r ) }
+    method Lambda ($p, $b, $e) { $self->&intern( Lambda  => $p, $b, $e ) }
 }
 
 ## -----------------------------------------------------------------------------
@@ -164,7 +230,7 @@ class Parser {
             when (/\s/)    { $self->skip_whitespace }
             when (';')     { $self->skip_until_newline }
             when ('(')     { push @tokens => +[] }
-            when (')')     { $self->push_stack( $alloc->List( @{ pop @tokens } ) ) }
+            when (')')     { $self->push_stack( $alloc->Lists->list_of( @{ pop @tokens } ) ) }
             when (/[0-9]/) { $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) ) }
             when ('"')     { $self->push_stack( $alloc->Str( $self->parse_string( $next ) ) ) }
             when ('-')     { $self->peek =~ /[0-9]/
@@ -214,63 +280,62 @@ class Parser {
 
 ## -----------------------------------------------------------------------------
 
+class Compiler {
+    field $alloc :param :reader;
+
+    field @environs;
+
+    method compile ($exprs, $env=undef) {
+        push @environs => ($env //= $alloc->Envs->init_env);
+        return +[ map $self->compile_expr($_), @$exprs ]
+    }
+
+    method compile_expr ($expr) {
+        if ($expr isa Cons) {
+            my $h = $alloc->deref( $expr->head );
+            my $t = $alloc->deref( $expr->tail );
+            if ($h isa Sym) {
+                given ($h->ident) {
+                    when ('lambda') {
+                        my ($p, $b) = $alloc->Lists->uncons($t);
+                        return $alloc->Lambda( $p, $b, $environs[-1] );
+                    }
+                    when ('defun') {
+                        my ($name, $p, $b) = $alloc->Lists->uncons($t);
+                        my $env    = $environs[-1];
+                        my $lambda = $alloc->Lambda( $p, $b, $env );
+                        push @environs => $alloc->Envs->bind_symbol( $name, $lambda, $env );
+                        return $alloc->deref( $environs[-1]->head ); # return the pair binding ...
+                    }
+                }
+            }
+            return $alloc->Cons( $self->compile_expr($h), $self->compile_expr($t) );
+        } else {
+            return $expr;
+        }
+    }
+}
+
+## -----------------------------------------------------------------------------
+
 my $a = Allocator->new;
 my $p = Parser->new( alloc => $a );
+my $c = Compiler->new( alloc => $a );
 
-my $exprs = $p->parse(q[
+my $parsed = $p->parse(q[
 
-
-    (defun fact (n)
-        (if (== n 0) 1
-            (* n (fact (- n 1)))))
-
-    (defun fib (n)
-        (if (< n 2) n
-            (+ (fib (- n 1)) (fib (- n 2)))))
-
-    (defun tail-call-demo (n)
-        (if (== n 0) 0
-           (tail-call-demo (- n 1))))
-
-    (defun length (list)
-        (if (nil? list) 0
-            (+ 1 (length (cdr list)))))
-
-    (defun length-iter (list count)
-        (if (nil? list) count
-            (length-iter (cdr list) (+ count 1))))
-
-    (defun range (b e)
-        (if (== b e)
-            (cons e ())
-            (cons b (range (+ b 1) e))))
-
-    (defun map (f lst)
-        (if (nil? lst) ()
-            (cons (f (car lst)) (map f (cdr lst)))))
-
-    (defun grep (f lst)
-        (if (nil? lst) ()
-            (if (f (car lst))
-                (cons (car lst) (grep f (cdr lst)))
-                (grep f (cdr lst)))))
-
-    (defun reduce (acc f lst)
-        (if (nil? lst) acc
-            (reduce (f (car lst) acc) f (cdr lst))))
-
-    (defun sum (lst)
-        (reduce 0 (lambda (n acc) (+ acc n)) lst))
-
-    (defun product (lst)
-        (reduce 1 (lambda (n acc) (* acc n)) lst))
+    (lambda (x y) (+ x y))
+    (defun adder (x y) (+ x y))
 
 ]);
 
-say 'EXPRS:';
-say $a->DUMP($_) foreach @$exprs;
+my $compiled = $c->compile( $parsed );
 
+say 'PARSED:';
+say $a->Utils->DUMP($_) foreach @$parsed;
+say 'COMPILED:';
+say $a->Utils->DUMP($_) foreach @$compiled;
 say 'MEMORY:';
-say $a->DUMP($_) foreach $a->memory;
+say $a->Utils->DUMP($_) foreach $a->memory;
 
 ## -----------------------------------------------------------------------------
