@@ -15,7 +15,7 @@ class Term {
     field $index :param :reader;
     field $data  :param :reader;
     method is_nil { false }
-    method is_equal_to ($o) { $index->hash == $o->index->hash }
+    method equal_to ($o) { $index->hash eq $o->index->hash }
 }
 
 class Sym     :isa(Term) { method ident { $self->data->[0] } }
@@ -43,12 +43,25 @@ class Lambda :isa(Term) {
     method env    { $self->data->[2] }
 }
 
+class Condition :isa(Term) {
+    method cond     { $self->data->[0] }
+    method if_true  { $self->data->[1] }
+    method if_false { $self->data->[2] }
+}
+
+class Builtin :isa(Term) {
+    method name { $self->data->[0] }
+    method raw  { $self->data->[1] }
+}
+
 ## -----------------------------------------------------------------------------
 
-class Allocator::Env::Util {
+class Allocator::Utils {
     field $alloc :param :reader;
 
-    method init_env (@bindings) {
+    ## ... environs
+
+    method InitEnv (@bindings) {
         my $env = $alloc->Nil;
         foreach my ($sym, $val) (@bindings) {
             $env = $alloc->Env( $alloc->Pair( $sym, $val ), $env );
@@ -56,27 +69,45 @@ class Allocator::Env::Util {
         return $env;
     }
 
-    method bind_symbol ($sym, $val, $env) {
+    method Lookup ($sym, $env) {
+        return undef if $env->is_nil;
+        my $candidate = $self->First($env);
+        if ($self->First($candidate)->equal_to($sym)) {
+            return $self->Second($candidate);
+        } else {
+            return $self->Lookup($sym, $self->Rest($env));
+        }
+    }
+
+    method BindSymbol ($sym, $val, $env) {
         $alloc->Env( $alloc->Pair( $sym, $val ), $env )
     }
 
-    method bind_params ($params, $args, $env) {
-        my @params = $alloc->Lists->uncons($params);
-        my @args   = $alloc->Lists->uncons($args);
+    method BindParams ($params, $args, $env) {
+        my @params = $alloc->Util->Uncons($params);
+        my @args   = $alloc->Util->Uncons($args);
         die sprintf 'Arity mismatch, got(%s) expected(%s)' => (scalar @args), (scalar @params)
             unless scalar @args == scalar @params;
         my $local = $env;
         while (@params) {
-            $local = $self->bind_symbol( shift @params, shift @args, $local )
+            $local = $self->BindSymbol( shift @params, shift @args, $local )
         }
         return $local;
     }
-}
 
-class Allocator::List::Util {
-    field $alloc :param :reader;
+    ## ... accessors
 
-    method list_of (@list) {
+    method First  ($t) { $alloc->deindex($t->data->[0]) }
+    method Second ($t) { $alloc->deindex($t->data->[1]) }
+    method Third  ($t) { $alloc->deindex($t->data->[2]) }
+
+    method Rest   ($t) { $alloc->deindex($t->data->[1]) }
+    method Head   ($l) { $alloc->deindex($l->data->[0]) }
+    method Tail   ($l) { $alloc->deindex($l->data->[1]) }
+
+    ## ... lists
+
+    method ListOf (@list) {
         my $list = $alloc->Nil;
         while (@list) {
             $list = $alloc->Cons( pop @list, $list );
@@ -84,33 +115,38 @@ class Allocator::List::Util {
         return $list;
     }
 
-    method uncons ($list) {
+    method Uncons ($list) {
         my @list;
         until ($list->is_nil) {
-            push @list => $alloc->deref( $list->head );
-            $list = $alloc->deref( $list->tail );
+            push @list => $self->Head( $list );
+            $list = $self->Tail( $list );
         }
         return @list;
     }
-}
 
-class Allocator::Util {
-    field $alloc :param :reader;
+    ## ... printing and debugging
 
     method pprint ($t) {
         given (blessed $t) {
-            when ('Sym')    { $t->ident }
-            when ('Str')    { $t->value }
-            when ('Num')    { $t->value }
-            when ('Bool')   { $t->value }
-            when ('Nil')    { '#nil' }
-            when ('Cons')   { sprintf '(%s)' => join ' ' => map $self->pprint($_), $alloc->Lists->uncons($t) }
-            when ('Pair')   { sprintf '(%s . %s)' => $self->pprint($alloc->deref($t->first)), $self->pprint($alloc->deref($t->second)) }
-            when ('Env')    { sprintf '{ %s }' => join ' ' => map $self->pprint($_), $alloc->Lists->uncons($t) }
-            when ('Lambda') {
+            when ('Sym')     { $t->ident }
+            when ('Str')     { $t->value }
+            when ('Num')     { $t->value }
+            when ('Bool')    { $t->value }
+            when ('Nil')     { '#nil' }
+            when ('Cons')    { sprintf '(%s)' => join ' ' => map $self->pprint($_), $alloc->Util->Uncons($t) }
+            when ('Pair')    { sprintf '(%s . %s)' => $self->pprint($self->First($t)), $self->pprint($self->Second($t)) }
+            when ('Env')     { sprintf '{ %s }' => join ' ' => map $self->pprint($_), $alloc->Util->Uncons($t) }
+            when ('Builtin') { sprintf '<%s>' => $self->pprint($self->First($t)) }
+            when ('Lambda')  {
                 sprintf '(<lambda> %s %s)' =>
-                    $self->pprint($alloc->deref($t->params)),
-                    $self->pprint($alloc->deref($t->body))
+                    $self->pprint($self->First($t)),
+                    $self->pprint($self->Second($t))
+            }
+            when ('Condition') {
+                sprintf '(<if> %s %s %s)' =>
+                    $self->pprint($self->First($t)),
+                    $self->pprint($self->Second($t)),
+                    $self->pprint($self->Third($t))
             }
             default { die "WTF! $self" }
         }
@@ -118,7 +154,7 @@ class Allocator::Util {
 
     method DUMP ($t) {
         sprintf(
-            '$(%05d) | %-6s | %s | %-26s | %s',
+            '$(%05d) | %-9s | %s | %-26s | %s',
             $t->index->idx,
             (blessed $t),
             (substr $t->index->hash, 0, 6),
@@ -140,16 +176,16 @@ class Index {
 class Allocator {
     field @memory :reader;
     field %intern :reader;
+    field %native :reader;
 
     field $Nil;
     field $True;
     field $False;
 
-    field $Utils :reader;
-    field $Lists :reader;
-    field $Envs  :reader;
+    field $Util :reader;
 
-    method deref ($index) { $memory[ $index->idx ] }
+    method deindex ($index) { $memory[ $index->idx ] }
+    method deref   ($index) { $native{ $index->hash } }
 
     my method intern ($type, @payload) {
         my $hash  = Digest::MD5::md5_hex( join '/' => $type, join ':' => @payload );
@@ -168,24 +204,29 @@ class Allocator {
         $Nil   = $self->&intern( Nil  => '#nil'   );
         $True  = $self->&intern( Bool => '#true'  );
         $False = $self->&intern( Bool => '#false' );
-
-        $Utils = Allocator::Util->new( alloc => $self );
-        $Lists = Allocator::List::Util->new( alloc => $self );
-        $Envs  = Allocator::Env::Util->new( alloc => $self );
+        $Util  = Allocator::Utils->new( alloc => $self );
     }
 
     method Nil   { $Nil }
     method True  { $True }
     method False { $False }
 
-    method Bool   ($value)     { $value ? $True : $False }
-    method Sym    ($ident)     { $self->&intern( Sym  => $ident ) }
-    method Num    ($value)     { $self->&intern( Num  => $value ) }
-    method Str    ($value)     { $self->&intern( Str  => $value ) }
-    method Cons   ($h, $t)     { $self->&intern( Cons => $h, $t ) }
-    method Pair   ($f, $s)     { $self->&intern( Pair => $f, $s ) }
-    method Env    ($p, $r)     { $self->&intern( Env  => $p, $r ) }
-    method Lambda ($p, $b, $e) { $self->&intern( Lambda  => $p, $b, $e ) }
+    method Bool ($value) { $value ? $True : $False }
+    method Sym  ($ident) { $self->&intern( Sym  => $ident ) }
+    method Num  ($value) { $self->&intern( Num  => $value ) }
+    method Str  ($value) { $self->&intern( Str  => $value ) }
+    method Cons ($h, $t) { $self->&intern( Cons => $h, $t ) }
+    method Pair ($f, $s) { $self->&intern( Pair => $f, $s ) }
+    method Env  ($p, $r) { $self->&intern( Env  => $p, $r ) }
+
+    method Lambda    ($p, $b, $e) { $self->&intern( Lambda    => $p, $b, $e ) }
+    method Condition ($c, $t, $f) { $self->&intern( Condition => $c, $t, $f ) }
+
+    method Builtin ($name, $f) {
+        my $bif = $self->&intern( Builtin => $name );
+        $native{ $bif->index->hash } //= $f;
+        return $bif;
+    }
 }
 
 ## -----------------------------------------------------------------------------
@@ -230,7 +271,7 @@ class Parser {
             when (/\s/)    { $self->skip_whitespace }
             when (';')     { $self->skip_until_newline }
             when ('(')     { push @tokens => +[] }
-            when (')')     { $self->push_stack( $alloc->Lists->list_of( @{ pop @tokens } ) ) }
+            when (')')     { $self->push_stack( $alloc->Util->ListOf( @{ pop @tokens } ) ) }
             when (/[0-9]/) { $self->push_stack( $alloc->Num( $self->parse_number( $next ) ) ) }
             when ('"')     { $self->push_stack( $alloc->Str( $self->parse_string( $next ) ) ) }
             when ('-')     { $self->peek =~ /[0-9]/
@@ -286,26 +327,35 @@ class Compiler {
     field @environs;
 
     method compile ($exprs, $env=undef) {
-        push @environs => ($env //= $alloc->Envs->init_env);
+        push @environs => ($env //= $alloc->Util->InitEnv);
         return +[ map $self->compile_expr($_), @$exprs ]
     }
 
     method compile_expr ($expr) {
         if ($expr isa Cons) {
-            my $h = $alloc->deref( $expr->head );
-            my $t = $alloc->deref( $expr->tail );
+            my $h = $alloc->Util->Head( $expr );
+            my $t = $alloc->Util->Tail( $expr );
             if ($h isa Sym) {
                 given ($h->ident) {
+                    when ('if') {
+                        my ($c, $t, $f) = map $self->compile_expr($_), $alloc->Util->Uncons($t);
+                        return $alloc->Condition( $c, $t, $f );
+                    }
                     when ('lambda') {
-                        my ($p, $b) = $alloc->Lists->uncons($t);
-                        return $alloc->Lambda( $p, $b, $environs[-1] );
+                        my ($p, $b) = $alloc->Util->Uncons($t);
+                        return $alloc->Lambda( $p, $self->compile_expr($b), $environs[-1] );
                     }
                     when ('defun') {
-                        my ($name, $p, $b) = $alloc->Lists->uncons($t);
+                        my ($name, $p, $b) = $alloc->Util->Uncons($t);
                         my $env    = $environs[-1];
-                        my $lambda = $alloc->Lambda( $p, $b, $env );
-                        push @environs => $alloc->Envs->bind_symbol( $name, $lambda, $env );
-                        return $alloc->deref( $environs[-1]->head ); # return the pair binding ...
+                        my $lambda = $alloc->Lambda( $p, $self->compile_expr($b), $env );
+                        push @environs => $alloc->Util->BindSymbol( $name, $lambda, $env );
+                        return $alloc->Util->First( $environs[-1] ); # return the new pair binding ...
+                    }
+                    default {
+                        if (my $bif = $alloc->Util->Lookup($h, $environs[-1])) {
+                            return $alloc->Cons( $bif, $self->compile_expr($t) );
+                        }
                     }
                 }
             }
@@ -318,24 +368,46 @@ class Compiler {
 
 ## -----------------------------------------------------------------------------
 
+class Interpreter {
+
+}
+
+## -----------------------------------------------------------------------------
+
 my $a = Allocator->new;
 my $p = Parser->new( alloc => $a );
 my $c = Compiler->new( alloc => $a );
+my $e = $a->Util->InitEnv(
+    $a->Sym('=='), $a->Builtin( $a->Sym('=='), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Bool( $n->value == $m->value )
+    }),
+    $a->Sym('-'), $a->Builtin( $a->Sym('-'), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Num( $n->value - $m->value )
+    }),
+    $a->Sym('*'), $a->Builtin( $a->Sym('*'), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Num( $n->value * $m->value )
+    }),
+);
+
 
 my $parsed = $p->parse(q[
 
-    (lambda (x y) (+ x y))
-    (defun adder (x y) (+ x y))
+    (defun fact (n)
+        (if (== n 0) 1
+            (* n (fact (- n 1)))))
 
 ]);
 
-my $compiled = $c->compile( $parsed );
+my $compiled = $c->compile( $parsed, $e );
 
 say 'PARSED:';
-say $a->Utils->DUMP($_) foreach @$parsed;
+say $a->Util->DUMP($_) foreach @$parsed;
 say 'COMPILED:';
-say $a->Utils->DUMP($_) foreach @$compiled;
+say $a->Util->DUMP($_) foreach @$compiled;
 say 'MEMORY:';
-say $a->Utils->DUMP($_) foreach $a->memory;
+say $a->Util->DUMP($_) foreach $a->memory;
 
 ## -----------------------------------------------------------------------------
