@@ -7,7 +7,7 @@ use Time::HiRes  qw[ gettimeofday tv_interval ];
 use Sub::Util    qw[ set_subname ];
 
 use constant DEBUG => $ENV{DEBUG} // 0;
-use Term::ReadKey (); our $TERM_WIDTH = (Term::ReadKey::GetTerminalSize)[0];
+use Term::ReadKey (); our $TERM_WIDTH = (Term::ReadKey::GetTerminalSize)[0] // 300;
 
 use Digest::MD5 ();
 
@@ -28,37 +28,13 @@ class Bool    :isa(Term) {
     method is_false { $self->data->[0] eq '#f' }
 }
 class Nil     :isa(Term) { method is_nil { true } }
-class Cons    :isa(Term) {
-    method head { $self->data->[0] }
-    method tail { $self->data->[0] }
-}
+class Cons    :isa(Term) {} # head, tail
+class Pair    :isa(Cons) {} # Pair is a cons where tail is not a list
+class Env     :isa(Cons) {} # Env is a list of pairs
 
-# Env is a list of pairs
-class Env :isa(Cons) {}
-
-# Pair is a cons where tail is not a list
-class Pair :isa(Cons) {
-    method first  { $self->head }
-    method second { $self->tail }
-}
-
-class Lambda :isa(Term) {
-    method params { $self->data->[0] }
-    method body   { $self->data->[1] }
-    method env    { $self->data->[2] }
-    method name   { $self->data->[3] }
-}
-
-class Condition :isa(Term) {
-    method cond     { $self->data->[0] }
-    method if_true  { $self->data->[1] }
-    method if_false { $self->data->[2] }
-}
-
-class Builtin :isa(Term) {
-    method name { $self->data->[0] }
-    method raw  { $self->data->[1] }
-}
+class Lambda    :isa(Term) {} # params, body, env
+class Condition :isa(Term) {} # condition, if-true, if-false
+class Builtin   :isa(Term) {} # name, CODE
 
 ## -----------------------------------------------------------------------------
 
@@ -206,9 +182,7 @@ class Allocator {
         my $hash = Digest::MD5::md5_hex(
             join '/' => $type,
                 join ':' =>
-                    ($type eq 'Lambda'
-                        ? (grep { not($_ isa Env) } @payload)
-                        : @payload)
+                    map { blessed $_ ? $_->index->hash : $_ } @payload
         );
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
         my $index = Index->new( idx => (scalar @memory), hash => $hash );
@@ -357,6 +331,11 @@ class Compiler {
     my method current_env { $environs[-1] }
 
     my method seal_top_level {
+        # HACK:
+        # this is a hack to allow for
+        # top-level namespace items to
+        # have more dynamic bindings
+        # should to be fixed ASAP
         my $env_idx = $self->&current_env->index;
         $_->data->[2] = $env_idx foreach @top_level;
     }
@@ -501,9 +480,9 @@ class Interpreter::CEK {
     field $steps :reader = 0;
 
     my method LOG ($fmt, @args) {
-        my $indent = '';
-        my $depth  = 0;
-        1 while caller( ++$depth );
+        #my $indent = '';
+        #my $depth  = 0;
+        #1 while caller( ++$depth );
         say sprintf("%05d | ${fmt}", $steps, map {
                 blessed $_
                     ? $_ isa Env
@@ -686,7 +665,7 @@ my $bif = $a->Util->InitEnv(
     liftNumBinOp($a, '-', sub ($n, $m) { $n - $m }),
     liftNumBinOp($a, '*', sub ($n, $m) { $n * $m }),
     liftNumBinOp($a, '/', sub ($n, $m) { $n / $m }),
-    liftNumBinOp($a, '%', sub ($n, $m) { $n / $m }),
+    liftNumBinOp($a, '%', sub ($n, $m) { $n % $m }),
 
     liftTermBinOp($a, 'eq?', sub ($n, $m) { $a->Bool(  $n->equal_to($m) ) }),
     liftTermBinOp($a, 'ne?', sub ($n, $m) { $a->Bool( !$n->equal_to($m) ) }),
@@ -752,6 +731,8 @@ my $SOURCE = q[
     (defun even? (n) (if (== n 0) #t (odd?  (- n 1))))
     (defun odd?  (n) (if (== n 0) #f (even? (- n 1))))
 
+    (defun make-adder (n) (lambda (x) (+ x n)))
+
     (list
         (even? 10)
         (odd? 10)
@@ -792,6 +773,8 @@ my $SOURCE = q[
                     (list 100 25 10 411 75 20 35 1000)))
             (if (even? (* 2 5)) (+ (* 2 5) 20) -1)
             (if (even? (* 3 5)) -1 (if (odd? (* 3 5)) 30 -1))
+            ;((make-adder 10) 20)
+            ;((make-adder 20) 10)
         ))
         "<- all done!"
     )
@@ -852,7 +835,7 @@ if ($ENV{CEK}) {
     say '=' x $TERM_WIDTH;
 }
 
-if ($ENV{MEM}) {
+if ($ENV{DUMP_MEMORY}) {
     say '';
     say '=' x $TERM_WIDTH;
     say 'MEMORY:';
