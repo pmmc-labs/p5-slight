@@ -18,6 +18,7 @@ class Term {
     field $data  :param :reader;
     method is_nil { false }
     method equal_to ($o) { $index->hash eq $o->index->hash }
+    method short_hash { substr($index->hash, 0, 6) }
 }
 
 class Sym     :isa(Term) { method ident { $self->data->[0] } }
@@ -32,7 +33,16 @@ class Cons    :isa(Term) {} # head, tail
 class Pair    :isa(Cons) {} # Pair is a cons where tail is not a list
 class Env     :isa(Cons) {} # Env is a list of pairs
 
-class Lambda    :isa(Term) {} # params, body, env
+# compile-time version (w/ compile-time env)
+class Partial :isa(Term) { # params, body, env, name?
+    method has_name { defined $self->data->[3] }
+}
+
+# runtime-time version (w/ captured runtime env)
+class Lambda  :isa(Term) { # params, body, env, name?
+    method has_name { defined $self->data->[3] }
+}
+
 class Condition :isa(Term) {} # condition, if-true, if-false
 class Builtin   :isa(Term) {} # name, CODE
 
@@ -128,6 +138,11 @@ class Allocator::Utils {
             when ('Pair')    { sprintf '(%s . %s)' => $self->pprint($self->First($t)), $self->pprint($self->Second($t)) }
             when ('Env')     { sprintf '{ %s }' => join ' ' => map $self->pprint($_), $alloc->Util->Uncons($t) }
             when ('Builtin') { sprintf '<%s>' => $self->pprint($self->First($t)) }
+            when ('Partial')  {
+                sprintf '[<lambda> %s %s]' =>
+                    $self->pprint($self->First($t)),
+                    $self->pprint($self->Second($t))
+            }
             when ('Lambda')  {
                 sprintf '(<lambda> %s %s)' =>
                     $self->pprint($self->First($t)),
@@ -148,7 +163,7 @@ class Allocator::Utils {
             '$(%05d) | %-9s | %s | %-35s | %s',
             $t->index->idx,
             (blessed $t),
-            (substr $t->index->hash, 0, 6),
+            $t->short_hash,
             (join ' ' => map {
                 blessed $_
                     ? (sprintf '$(%05d)' => $_->idx)
@@ -220,6 +235,10 @@ class Allocator {
 
     method Lambda ($p, $b, $e, $name=undef) {
         $self->&intern( Lambda => $p, $b, $e, $name // () )
+    }
+
+    method Partial ($p, $b, $e, $name=undef) {
+        $self->&intern( Partial => $p, $b, $e, $name // () )
     }
 
     method Builtin ($name, $f) {
@@ -361,7 +380,7 @@ class Compiler {
                     }
                     when ('lambda') {
                         my ($p, $b) = $alloc->Util->Uncons($t);
-                        return $alloc->Lambda( $p, $self->compile_expr($b), $self->&current_env );
+                        return $alloc->Partial( $p, $self->compile_expr($b), $self->&current_env );
                     }
                     when ('defun') {
                         my ($name, $p, $b) = $alloc->Util->Uncons($t);
@@ -393,7 +412,7 @@ class Interpreter::ASTWalker {
     my method LOG ($depth, $fmt, @args) {
         my $indent = '';
         $indent = '  ' x $depth if $depth > 0;
-        say $indent, sprintf $fmt, map $alloc->Util->pprint($_), @args;
+        say $indent, sprintf $fmt, map blessed $_ ? $alloc->Util->pprint($_) : $_, @args;
     }
 
     method run ($exprs, $env) {
@@ -435,6 +454,17 @@ class Interpreter::ASTWalker {
     method evaluate ($expr, $env, $depth=0) {
         ::DEBUG && $self->&LOG( $depth, 'EVAL %s' => $expr );
         given (blessed $expr) {
+            when ('Partial') {
+                ::DEBUG && $self->&LOG( $depth, 'CLOSING OVER %s @ %s' => $expr, $env->short_hash );
+                return $alloc->Lambda(
+                    $alloc->Util->First($expr),  # params
+                    $alloc->Util->Second($expr), # body
+                    $env,                        # captured-env
+                    $expr->has_name              # name?
+                        ? $alloc->Util->Fourth($expr)
+                        : (),
+                );
+            }
             when ('Sym') {
                 ::DEBUG && $self->&LOG( $depth + 1, 'LOOKUP %s' => $expr );
                 if (my $found = $alloc->Util->Lookup($expr, $env)) {
@@ -486,7 +516,7 @@ class Interpreter::CEK {
         say sprintf("%05d | ${fmt}", $steps, map {
                 blessed $_
                     ? $_ isa Env
-                        ? substr($_->index->hash, 0, 6)
+                        ? $_->short_hash
                         : $alloc->Util->pprint($_)
                     : $_
                 } @args)
@@ -519,13 +549,28 @@ class Interpreter::CEK {
     method evaluate ($expr, $env, $kont) {
         ::DEBUG && $self->&LOG('~> EVAL %s' => $expr);
         given (blessed $expr) {
+            when ('Partial') {
+                ::DEBUG && $self->&LOG('() CLOSING OVER %s @ %s' => $expr, $env->short_hash );
+                return $self->&return_value(
+                    $alloc->Lambda(
+                        $alloc->Util->First($expr),  # params
+                        $alloc->Util->Second($expr), # body
+                        $env,                        # captured-env
+                        $expr->has_name              # name?
+                            ? $alloc->Util->Fourth($expr)
+                            : (),
+                    ),
+                    $env,
+                    $kont
+                );
+            }
             when ('Sym') {
                 ::DEBUG && $self->&LOG('?> LOOKUP %s', $expr);
                 if (my $found = $alloc->Util->Lookup($expr, $env)) {
                     ::DEBUG && $self->&LOG('<? FOUND %s := %s', $expr, $found);
                     return $self->&return_value( $found, $env, $kont );
                 } else {
-                    return $alloc->Str("Could not find (".$alloc->Util->pprint($expr).") in Env".$alloc->Util->pprint($env)), $env, undef;
+                    return $alloc->Str("Could not find (".$alloc->Util->pprint($expr).") in Env".$env->short_hash), $env, undef;
                 }
             }
             when ('Cons') {
@@ -740,8 +785,8 @@ my $SOURCE = q[
         (fib 6)
         (fact (fib 6))
         (length (list 1 2 3 4 5))
-        ;(length-iter (list 1 2 3 4 5) 0)
-        ;(tail-call-demo 10)
+        (length-iter (list 1 2 3 4 5) 0)
+        (tail-call-demo 10)
         ;; bunch of silly ways to get 30
         (length (list
             30
@@ -773,8 +818,8 @@ my $SOURCE = q[
                     (list 100 25 10 411 75 20 35 1000)))
             (if (even? (* 2 5)) (+ (* 2 5) 20) -1)
             (if (even? (* 3 5)) -1 (if (odd? (* 3 5)) 30 -1))
-            ;((make-adder 10) 20)
-            ;((make-adder 20) 10)
+            ((make-adder 10) 20)
+            ((make-adder 20) 10)
         ))
         "<- all done!"
     )
