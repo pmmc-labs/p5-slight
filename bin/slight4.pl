@@ -502,7 +502,7 @@ class Interpreter::CEK {
         my $indent = '';
         my $depth  = 0;
         1 while caller( ++$depth );
-        say sprintf("%d | %05d | ${fmt}", $depth, $steps, map {
+        say sprintf("%05d | ${fmt}", $steps, map {
                 blessed $_
                     ? $_ isa Env
                         ? substr($_->index->hash, 0, 6)
@@ -654,10 +654,7 @@ my $bif = $a->Util->InitEnv(
     }),
 );
 
-say '=' x $TERM_WIDTH;
-say 'PARSING ...';
-say '-' x $TERM_WIDTH;
-my $parsed = $p->parse(q[
+my $SOURCE = q[
 
     (defun adder (x y) (+ x y))
 
@@ -666,37 +663,61 @@ my $parsed = $p->parse(q[
             (* n (fact (- n 1)))))
 
     (fact 6)
-]);
+];
 
 say '=' x $TERM_WIDTH;
-say 'COMPILING ...';
+say 'SOURCE:';
 say '-' x $TERM_WIDTH;
-
-my ($compiled, $e) = $c->compile( $parsed, $bif );
-
+say $SOURCE;
+say '';
 say '=' x $TERM_WIDTH;
-say 'RUNNING ...';
+say 'PARSING LOG:';
 say '-' x $TERM_WIDTH;
-
-my $evaled = $ast->run( $compiled, $e );
-
-say '=' x $TERM_WIDTH;
+my $parsed = $p->parse($SOURCE);
+say '-' x $TERM_WIDTH;
 say 'PARSED:';
 say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach @$parsed;
 say '=' x $TERM_WIDTH;
+say '';
+say '=' x $TERM_WIDTH;
+say 'COMPILIER LOG:';
+say '-' x $TERM_WIDTH;
+my ($compiled, $e) = $c->compile( $parsed, $bif );
+say '-' x $TERM_WIDTH;
 say 'COMPILED:';
 say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach @$compiled;
 say '=' x $TERM_WIDTH;
-say 'EVALED:';
-say '-' x $TERM_WIDTH;
-say $a->Util->DUMP($evaled);
+say '';
+say '=' x $TERM_WIDTH;
+{
+    say 'RUNNING LOG(AST):';
+    say '-' x $TERM_WIDTH;
+    my $evaled = $ast->run( $compiled, $e );
+    say '=' x $TERM_WIDTH;
+    say 'RESULT(AST):';
+    say '-' x $TERM_WIDTH;
+    say $a->Util->DUMP($evaled);
+    say '=' x $TERM_WIDTH;
+}
+say '';
+say '=' x $TERM_WIDTH;
+{
+    say 'RUNNING LOG(CEK)';
+    say '-' x $TERM_WIDTH;
+    my $evaled = $cek->run( $compiled, $e );
+    say '=' x $TERM_WIDTH;
+    say 'RESULT(CEK):';
+    say '-' x $TERM_WIDTH;
+    say $a->Util->DUMP($evaled);
+    say '=' x $TERM_WIDTH;
+}
+say '';
 say '=' x $TERM_WIDTH;
 say 'MEMORY:';
 say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach $a->memory;
 say '=' x $TERM_WIDTH;
-
 
 ## -----------------------------------------------------------------------------
