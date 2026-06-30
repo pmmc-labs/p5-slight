@@ -54,6 +54,17 @@ class Allocator::Utils {
 
     ## ... environs
 
+    method CaptureClosure ($partial, $env) {
+        return $alloc->Lambda(
+            $self->First($partial),  # params
+            $self->Second($partial), # body
+            $env,                    # captured-env
+            $partial->has_name       # name?
+                ? $alloc->Util->Fourth($partial)
+                : ()
+        )
+    }
+
     method InitEnv (@bindings) {
         my $env = $alloc->Nil;
         foreach my ($sym, $val) (@bindings) {
@@ -361,14 +372,15 @@ class Compiler {
 
     my method current_env { $environs[-1] }
 
-    my method seal_top_level {
-        # HACK:
-        # this is a hack to allow for
-        # top-level namespace items to
-        # have more dynamic bindings
-        # should to be fixed ASAP
-        my $env_idx = $self->&current_env->index;
-        $_->data->[2] = $env_idx foreach @top_level;
+    my method fixup_top_level_env {
+        # fixup the top-level env pointers
+        my $env = $self->&current_env;
+        foreach my $binding (@top_level) {
+            my $partial = $alloc->Util->Second( $binding );
+            my $lambda  = $alloc->Util->CaptureClosure( $partial, $env );
+            $binding->data->[1] = $lambda->index;
+        }
+        return $env;
     }
 
     method compile ($exprs, $env=undef) {
@@ -376,8 +388,7 @@ class Compiler {
         my @exprs = @$exprs;
         @exprs = map $self->compile_expr($_), @exprs;
         @exprs = grep !$_->is_nil, @exprs;
-        $self->&seal_top_level;
-        return \@exprs, $self->&current_env;
+        return \@exprs, $self->&fixup_top_level_env;
     }
 
     method compile_expr ($expr) {
@@ -397,9 +408,9 @@ class Compiler {
                     when ('defun') {
                         my ($name, $p, $b) = $alloc->Util->Uncons($t);
                         my $env    = $self->&current_env;
-                        my $lambda = $alloc->Lambda( $p, $self->compile_expr($b), $env, $name );
+                        my $lambda = $alloc->Partial( $p, $self->compile_expr($b), $env, $name );
                         push @environs => $alloc->Util->BindSymbol( $name, $lambda, $env );
-                        push @top_level => $lambda;
+                        push @top_level => $alloc->Util->First($environs[-1]);
                         return $alloc->Nil;
                     }
                     default {
@@ -468,14 +479,7 @@ class Interpreter::ASTWalker {
         given (blessed $expr) {
             when ('Partial') {
                 ::DEBUG && $self->&LOG( $depth, 'CLOSING OVER %s @ %s' => $expr, $env->short_hash );
-                return $alloc->Lambda(
-                    $alloc->Util->First($expr),  # params
-                    $alloc->Util->Second($expr), # body
-                    $env,                        # captured-env
-                    $expr->has_name              # name?
-                        ? $alloc->Util->Fourth($expr)
-                        : (),
-                );
+                return $alloc->Util->CaptureClosure( $expr, $env );
             }
             when ('Sym') {
                 ::DEBUG && $self->&LOG( $depth + 1, 'LOOKUP %s' => $expr );
@@ -563,18 +567,7 @@ class Interpreter::CEK {
         given (blessed $expr) {
             when ('Partial') {
                 ::DEBUG && $self->&LOG('() CLOSING OVER %s @ %s' => $expr, $env->short_hash );
-                return $self->&return_value(
-                    $alloc->Lambda(
-                        $alloc->Util->First($expr),  # params
-                        $alloc->Util->Second($expr), # body
-                        $env,                        # captured-env
-                        $expr->has_name              # name?
-                            ? $alloc->Util->Fourth($expr)
-                            : (),
-                    ),
-                    $env,
-                    $kont
-                );
+                return $self->&return_value( $alloc->Util->CaptureClosure( $expr, $env ), $env, $kont );
             }
             when ('Sym') {
                 ::DEBUG && $self->&LOG('?> LOOKUP %s', $expr);
