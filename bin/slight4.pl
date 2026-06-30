@@ -600,8 +600,6 @@ class Interpreter::CEK {
             }
         }
     }
-
-
 }
 
 ## -----------------------------------------------------------------------------
@@ -652,6 +650,8 @@ sub liftTermListOp ($a, $op, $f) {
         return $f->( @args );
     })
 }
+
+$a->Str("BEFORE BIF CREATION");
 
 my $bif = $a->Util->InitEnv(
     liftBoolBinOp($a, '==', sub ($n, $m) { $n == $m }),
@@ -788,6 +788,7 @@ say '';
 say '=' x $TERM_WIDTH;
 say 'PARSING LOG:';
 say '-' x $TERM_WIDTH;
+$a->Str("BEFORE PARSING");
 my $parsed = $p->parse($SOURCE);
 say '-' x $TERM_WIDTH;
 say 'PARSED:';
@@ -798,6 +799,7 @@ say '';
 say '=' x $TERM_WIDTH;
 say 'COMPILIER LOG:';
 say '-' x $TERM_WIDTH;
+$a->Str("BEFORE COMPILING");
 my ($compiled, $e) = $c->compile( $parsed, $bif );
 say '-' x $TERM_WIDTH;
 say 'COMPILED:';
@@ -806,6 +808,7 @@ say $a->Util->DUMP($_) foreach @$compiled;
 say '=' x $TERM_WIDTH;
 
 if ($ENV{AST}) {
+    $a->Str("BEFORE AST RUNTIME");
     say '';
     say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(AST):';
@@ -821,6 +824,7 @@ if ($ENV{AST}) {
 }
 
 if ($ENV{CEK}) {
+    $a->Str("BEFORE CEK RUNTIME");
     say '';
     say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(CEK)';
@@ -834,6 +838,8 @@ if ($ENV{CEK}) {
     say $a->Util->DUMP($evaled);
     say '=' x $TERM_WIDTH;
 }
+
+$a->Str("THE END");
 
 if ($ENV{DUMP_MEMORY}) {
     say '';
