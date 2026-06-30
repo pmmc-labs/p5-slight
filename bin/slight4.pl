@@ -21,11 +21,14 @@ class Term {
 class Sym     :isa(Term) { method ident { $self->data->[0] } }
 class Str     :isa(Term) { method value { $self->data->[0] } }
 class Num     :isa(Term) { method value { $self->data->[0] } }
-class Bool    :isa(Term) { method value { $self->data->[0] } }
+class Bool    :isa(Term) {
+    method is_true  { $self->data->[0] eq '#true' }
+    method is_false { $self->data->[0] eq '#false' }
+}
 class Nil     :isa(Term) { method is_nil { true } }
 class Cons    :isa(Term) {
     method head { $self->data->[0] }
-    method tail { $self->data->[1] }
+    method tail { $self->data->[0] }
 }
 
 # Env is a list of pairs
@@ -41,6 +44,7 @@ class Lambda :isa(Term) {
     method params { $self->data->[0] }
     method body   { $self->data->[1] }
     method env    { $self->data->[2] }
+    method name   { $self->data->[3] }
 }
 
 class Condition :isa(Term) {
@@ -100,6 +104,7 @@ class Allocator::Utils {
     method First  ($t) { $alloc->deindex($t->data->[0]) }
     method Second ($t) { $alloc->deindex($t->data->[1]) }
     method Third  ($t) { $alloc->deindex($t->data->[2]) }
+    method Fourth ($t) { $alloc->deindex($t->data->[3]) }
 
     method Rest   ($t) { $alloc->deindex($t->data->[1]) }
     method Head   ($l) { $alloc->deindex($l->data->[0]) }
@@ -124,6 +129,14 @@ class Allocator::Utils {
         return @list;
     }
 
+    method Reverse ($list) {
+        return $self->ListOf( reverse $self->Uncons( $list ) )
+    }
+
+    method Append ($lhs, $rhs) {
+        $self->ListOf( $self->Uncons( $lhs ), $self->Uncons( $rhs ) )
+    }
+
     ## ... printing and debugging
 
     method pprint ($t) {
@@ -131,7 +144,7 @@ class Allocator::Utils {
             when ('Sym')     { $t->ident }
             when ('Str')     { $t->value }
             when ('Num')     { $t->value }
-            when ('Bool')    { $t->value }
+            when ('Bool')    { $t->data->[0] }
             when ('Nil')     { '#nil' }
             when ('Cons')    { sprintf '(%s)' => join ' ' => map $self->pprint($_), $alloc->Util->Uncons($t) }
             when ('Pair')    { sprintf '(%s . %s)' => $self->pprint($self->First($t)), $self->pprint($self->Second($t)) }
@@ -154,16 +167,16 @@ class Allocator::Utils {
 
     method DUMP ($t) {
         sprintf(
-            '$(%05d) | %-9s | %s | %-26s | %s',
+            '$(%05d) | %-9s | %s | %-35s | %s',
             $t->index->idx,
             (blessed $t),
             (substr $t->index->hash, 0, 6),
             (join ' ' => map {
                 blessed $_
                     ? (sprintf '$(%05d)' => $_->idx)
-                    : (length $_ > 22 ? (substr($_, 0, 22).' ...') : $_)
+                    : (length $_ > 33 ? (substr($_, 0, 33).' ...') : $_)
             } $t->data->@*),
-            $self->pprint($t)
+            ($TERM_WIDTH > 70 ? substr($self->pprint($t), 0, ($TERM_WIDTH - 73)) : '')
         )
     }
 }
@@ -188,12 +201,18 @@ class Allocator {
     method deref   ($index) { $native{ $index->hash } }
 
     my method intern ($type, @payload) {
-        my $hash  = Digest::MD5::md5_hex( join '/' => $type, join ':' => @payload );
+        my $hash = Digest::MD5::md5_hex(
+            join '/' => $type,
+                join ':' =>
+                    ($type eq 'Lambda'
+                        ? (grep { not($_ isa Env) } @payload)
+                        : @payload)
+        );
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
         my $index = Index->new( idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
             index => $index,
-            data  => [ map blessed $_ ? $_->index : $_, @payload ]
+            data  => [ map { blessed $_ ? $_->index : $_ } @payload ]
         );
         push @memory => $value;
         $intern{$hash} = $index;
@@ -219,8 +238,13 @@ class Allocator {
     method Pair ($f, $s) { $self->&intern( Pair => $f, $s ) }
     method Env  ($p, $r) { $self->&intern( Env  => $p, $r ) }
 
-    method Lambda    ($p, $b, $e) { $self->&intern( Lambda    => $p, $b, $e ) }
-    method Condition ($c, $t, $f) { $self->&intern( Condition => $c, $t, $f ) }
+    method Condition ($c, $t, $f) {
+        $self->&intern( Condition => $c, $t, $f )
+    }
+
+    method Lambda ($p, $b, $e, $name=undef) {
+        $self->&intern( Lambda => $p, $b, $e, $name // () )
+    }
 
     method Builtin ($name, $f) {
         my $bif = $self->&intern( Builtin => $name );
@@ -324,11 +348,24 @@ class Parser {
 class Compiler {
     field $alloc :param :reader;
 
+    field $root_env;
     field @environs;
+    field @top_level;
+
+    my method current_env { $environs[-1] }
+
+    my method seal_top_level {
+        my $env_idx = $self->&current_env->index;
+        $_->data->[2] = $env_idx foreach @top_level;
+    }
 
     method compile ($exprs, $env=undef) {
-        push @environs => ($env //= $alloc->Util->InitEnv);
-        return +[ map $self->compile_expr($_), @$exprs ]
+        push @environs => ($root_env = ($env // $alloc->Util->InitEnv));
+        my @exprs = @$exprs;
+        @exprs = map $self->compile_expr($_), @exprs;
+        @exprs = grep !$_->is_nil, @exprs;
+        $self->&seal_top_level;
+        return \@exprs, $self->&current_env;
     }
 
     method compile_expr ($expr) {
@@ -343,17 +380,18 @@ class Compiler {
                     }
                     when ('lambda') {
                         my ($p, $b) = $alloc->Util->Uncons($t);
-                        return $alloc->Lambda( $p, $self->compile_expr($b), $environs[-1] );
+                        return $alloc->Lambda( $p, $self->compile_expr($b), $self->&current_env );
                     }
                     when ('defun') {
                         my ($name, $p, $b) = $alloc->Util->Uncons($t);
-                        my $env    = $environs[-1];
-                        my $lambda = $alloc->Lambda( $p, $self->compile_expr($b), $env );
+                        my $env    = $self->&current_env;
+                        my $lambda = $alloc->Lambda( $p, $self->compile_expr($b), $env, $name );
                         push @environs => $alloc->Util->BindSymbol( $name, $lambda, $env );
-                        return $alloc->Util->First( $environs[-1] ); # return the new pair binding ...
+                        push @top_level => $lambda;
+                        return $alloc->Nil;
                     }
                     default {
-                        if (my $bif = $alloc->Util->Lookup($h, $environs[-1])) {
+                        if (my $bif = $alloc->Util->Lookup($h, $root_env)) {
                             return $alloc->Cons( $bif, $self->compile_expr($t) );
                         }
                     }
@@ -368,7 +406,215 @@ class Compiler {
 
 ## -----------------------------------------------------------------------------
 
-class Interpreter {
+class Interpreter::ASTWalker {
+    field $alloc :param :reader;
+
+    my method LOG ($depth, $fmt, @args) {
+        my $indent = '';
+        $indent = '  ' x $depth if $depth > 0;
+        say $indent, sprintf $fmt, map $alloc->Util->pprint($_), @args;
+    }
+
+    method run ($exprs, $env) {
+        my $depth  = 0;
+        my $result = $alloc->Nil;
+        foreach my $expr (@$exprs) {
+            $result = $self->evaluate($expr, $env);
+            ::DEBUG && $self->&LOG( $depth, '... statement ended with %s' => $result );
+        }
+        return $result;
+    }
+
+    method apply ($call, $args, $env, $depth=0) {
+        ::DEBUG && $self->&LOG( $depth, 'APPLY %s %s' => $call, $args);
+        given (blessed $call) {
+            when ('Builtin') {
+                my $native = $alloc->deref( $call->index );
+                return $native->( $args );
+            }
+            when ('Lambda') {
+                my $params = $alloc->Util->First($call);
+                my $body   = $alloc->Util->Second($call);
+                my $local  = $alloc->Util->Third($call);
+                return $self->evaluate( $body, $alloc->Util->BindParams( $params, $args, $local ), $depth + 1 )
+            }
+            default { die 'WTF! cant apply a '.$alloc->Util->pprint($call) }
+        }
+    }
+
+    method evaluate_args ($args, $env, $depth=0) {
+        return $args if $args->is_nil;
+        ::DEBUG && $self->&LOG( $depth, 'EVAL/ARGS %s' => $args );
+        return $alloc->Cons(
+            $self->evaluate( $alloc->Util->Head($args), $env, $depth + 1 ),
+            $self->evaluate_args( $alloc->Util->Tail($args), $env, $depth + 1 )
+        )
+    }
+
+    method evaluate ($expr, $env, $depth=0) {
+        ::DEBUG && $self->&LOG( $depth, 'EVAL %s' => $expr );
+        given (blessed $expr) {
+            when ('Sym') {
+                ::DEBUG && $self->&LOG( $depth + 1, 'LOOKUP %s' => $expr );
+                if (my $found = $alloc->Util->Lookup($expr, $env)) {
+                    return $found;
+                } else {
+                    die "Could not find (".$alloc->Util->pprint($expr).") in Env";
+                }
+            }
+            when ('Cons') {
+                my $head = $alloc->Util->Head($expr);
+                ::DEBUG && $self->&LOG( $depth, 'EVAL/HEAD %s' => $head );
+                return $self->apply(
+                    $self->evaluate( $head, $env, $depth + 1 ),
+                    $self->evaluate_args( $alloc->Util->Tail($expr), $env, $depth + 1 ),
+                    $env,
+                    $depth
+                )
+            }
+            when ('Condition') {
+                ::DEBUG && $self->&LOG( $depth, 'COND');
+                my $result = $self->evaluate( $alloc->Util->First($expr), $env, $depth + 1 );
+                if ($result isa Bool && $result->is_true) {
+                    ::DEBUG && $self->&LOG( $depth, 'BRANCH %s' => $result);
+                    return $self->evaluate( $alloc->Util->Second($expr), $env, $depth + 1 );
+                } else {
+                    ::DEBUG && $self->&LOG( $depth, 'BRANCH %s' => $result);
+                    return $self->evaluate( $alloc->Util->Third($expr), $env, $depth + 1 );
+                }
+            }
+            default {
+                return $expr;
+            }
+        }
+    }
+}
+
+
+## -----------------------------------------------------------------------------
+
+class Interpreter::CEK {
+    field $alloc :param :reader;
+
+    field $steps :reader = 0;
+
+    my method LOG ($fmt, @args) {
+        my $indent = '';
+        my $depth  = 0;
+        1 while caller( ++$depth );
+        say sprintf("%d | %05d | ${fmt}", $depth, $steps, map {
+                blessed $_
+                    ? $_ isa Env
+                        ? substr($_->index->hash, 0, 6)
+                        : $alloc->Util->pprint($_)
+                    : $_
+                } @args)
+    }
+
+    method run ($exprs, $env) {
+        my @exprs = @$exprs;
+        return $self->execute(shift @exprs, $env, sub ($c, $e) {
+            return $c, $e, undef if scalar @exprs == 0;
+            return shift @exprs, $env, __SUB__;
+        })
+    }
+
+    method execute ($expr, $env, $kont) {
+        ::DEBUG && $self->&LOG('>> BEGIN %s %s' => $expr, $env);
+        while (true) {
+            $steps++;
+            say '-' x $::TERM_WIDTH;
+            ($expr, $env, $kont) = defined $expr ? $self->evaluate( $expr, $env, $kont ) : $kont->();
+            last if not defined $kont;
+        }
+        ::DEBUG && $self->&LOG('<< END %s %s' => $expr, $env);
+        return $expr;
+    }
+
+    my method return_value ($expr, $env, $kont) {
+        return undef, $env, sub { $kont->( $expr, $env ) };
+    }
+
+    method evaluate ($expr, $env, $kont) {
+        ::DEBUG && $self->&LOG('~> EVAL %s' => $expr);
+        given (blessed $expr) {
+            when ('Sym') {
+                ::DEBUG && $self->&LOG('?? LOOKUP %s', $expr);
+                if (my $found = $alloc->Util->Lookup($expr, $env)) {
+                    ::DEBUG && $self->&LOG('<- FOUND %s', $expr);
+                    return $self->&return_value( $found, $env, $kont );
+                } else {
+                    return $alloc->Str("Could not find (".$alloc->Util->pprint($expr).") in Env".$alloc->Util->pprint($env)), $env, undef;
+                }
+            }
+            when ('Cons') {
+                my $head = $alloc->Util->Head($expr);
+                my $tail = $alloc->Util->Tail($expr);
+                return $head, $env, sub ($call, $e) {
+                    ::DEBUG && $self->&LOG('>> EVAL/HEAD %s', $call);
+                    return $self->evaluate_args( $call, $tail, $e, $kont )
+                }
+            }
+            when ('Condition') {
+                my $cond     = $alloc->Util->First($expr);
+                my $if_true  = $alloc->Util->Second($expr);
+                my $if_false = $alloc->Util->Third($expr);
+                ::DEBUG && $self->&LOG('?? COND %s', $cond);
+                return $cond, $env, sub ($result, $e) {
+                    ::DEBUG && $self->&LOG('>> COND %s -> %s', $cond, $result);
+                    if ($result isa Bool && $result->is_true) {
+                        return $if_true, $e, $kont;
+                    } else {
+                        return $if_false, $e, $kont;
+                    }
+                }
+            }
+            default {
+                ::DEBUG && $self->&LOG('<- RETURN %s', $expr);
+                return $self->&return_value( $expr, $env, $kont );
+            }
+        }
+    }
+
+    method evaluate_args ($call, $args, $env, $kont) {
+        my $first = $alloc->Util->Head( $args );
+        my $rest  = $alloc->Util->Tail( $args );
+        my $done  = $alloc->Nil;
+        return $first, $env, sub ($arg, $e) {
+            $done = $alloc->Cons( $arg, $done );
+            ::DEBUG && $self->&LOG('+> EVAL/ARGS %s %s', $rest, $done);
+            if ($rest->is_nil) {
+                return $self->apply( $call, $alloc->Util->Reverse( $done ), $env, $kont );
+            } else {
+                my $next = $alloc->Util->Head($rest);
+                $rest = $alloc->Util->Tail($rest);
+                return $next, $e, __SUB__;
+            }
+        }
+    }
+
+    method apply ($call, $args, $env, $kont) {
+        ::DEBUG && $self->&LOG('>@ APPLY %s %s', $call, $args);
+        given (blessed $call) {
+            when ('Builtin') {
+                my $native = $alloc->deref( $call->index );
+                return $native->( $args ), $env, $kont;
+            }
+            when ('Lambda') {
+                my $params = $alloc->Util->First($call);
+                my $body   = $alloc->Util->Second($call);
+                my $local  = $alloc->Util->Third($call);
+                return $body, $alloc->Util->BindParams( $params, $args, $local ), sub ($c, $e) {
+                    ::DEBUG && $self->&LOG('@< LEAVE (%s) ^(%s)', $e, $env);
+                    return $c, $env, $kont;
+                }
+            }
+            default {
+                return $alloc->Str("Could not call (".$alloc->Util->pprint($call).")"), $env, undef;
+            }
+        }
+    }
+
 
 }
 
@@ -377,10 +623,22 @@ class Interpreter {
 my $a = Allocator->new;
 my $p = Parser->new( alloc => $a );
 my $c = Compiler->new( alloc => $a );
-my $e = $a->Util->InitEnv(
+
+my $ast = Interpreter::ASTWalker->new( alloc => $a );
+my $cek = Interpreter::CEK->new( alloc => $a );
+
+my $bif = $a->Util->InitEnv(
     $a->Sym('=='), $a->Builtin( $a->Sym('=='), sub ($args) {
         my ($n, $m) = $a->Util->Uncons($args);
         return $a->Bool( $n->value == $m->value )
+    }),
+    $a->Sym('!='), $a->Builtin( $a->Sym('!='), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Bool( $n->value != $m->value )
+    }),
+    $a->Sym('+'), $a->Builtin( $a->Sym('+'), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Num( $n->value + $m->value )
     }),
     $a->Sym('-'), $a->Builtin( $a->Sym('-'), sub ($args) {
         my ($n, $m) = $a->Util->Uncons($args);
@@ -390,24 +648,55 @@ my $e = $a->Util->InitEnv(
         my ($n, $m) = $a->Util->Uncons($args);
         return $a->Num( $n->value * $m->value )
     }),
+    $a->Sym('/'), $a->Builtin( $a->Sym('/'), sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Num( $n->value / $m->value )
+    }),
 );
 
-
+say '=' x $TERM_WIDTH;
+say 'PARSING ...';
+say '-' x $TERM_WIDTH;
 my $parsed = $p->parse(q[
+
+    (defun adder (x y) (+ x y))
 
     (defun fact (n)
         (if (== n 0) 1
             (* n (fact (- n 1)))))
 
+    (fact 6)
 ]);
 
-my $compiled = $c->compile( $parsed, $e );
+say '=' x $TERM_WIDTH;
+say 'COMPILING ...';
+say '-' x $TERM_WIDTH;
 
+my ($compiled, $e) = $c->compile( $parsed, $bif );
+
+say '=' x $TERM_WIDTH;
+say 'RUNNING ...';
+say '-' x $TERM_WIDTH;
+
+my $evaled = $ast->run( $compiled, $e );
+
+say '=' x $TERM_WIDTH;
 say 'PARSED:';
+say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach @$parsed;
+say '=' x $TERM_WIDTH;
 say 'COMPILED:';
+say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach @$compiled;
+say '=' x $TERM_WIDTH;
+say 'EVALED:';
+say '-' x $TERM_WIDTH;
+say $a->Util->DUMP($evaled);
+say '=' x $TERM_WIDTH;
 say 'MEMORY:';
+say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach $a->memory;
+say '=' x $TERM_WIDTH;
+
 
 ## -----------------------------------------------------------------------------
