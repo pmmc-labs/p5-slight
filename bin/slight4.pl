@@ -3,6 +3,7 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 use Data::Dumper qw[ Dumper ];
+use Time::HiRes  qw[ gettimeofday tv_interval ];
 
 use constant DEBUG => $ENV{DEBUG} // 0;
 use Term::ReadKey (); our $TERM_WIDTH = (Term::ReadKey::GetTerminalSize)[0];
@@ -523,7 +524,7 @@ class Interpreter::CEK {
         ::DEBUG && $self->&LOG('>> BEGIN %s %s' => $expr, $env);
         while (true) {
             $steps++;
-            say '-' x $::TERM_WIDTH;
+            ::DEBUG && say '-' x $::TERM_WIDTH;
             ($expr, $env, $kont) = defined $expr ? $self->evaluate( $expr, $env, $kont ) : $kont->();
             last if not defined $kont;
         }
@@ -539,9 +540,9 @@ class Interpreter::CEK {
         ::DEBUG && $self->&LOG('~> EVAL %s' => $expr);
         given (blessed $expr) {
             when ('Sym') {
-                ::DEBUG && $self->&LOG('?? LOOKUP %s', $expr);
+                ::DEBUG && $self->&LOG('?> LOOKUP %s', $expr);
                 if (my $found = $alloc->Util->Lookup($expr, $env)) {
-                    ::DEBUG && $self->&LOG('<- FOUND %s', $expr);
+                    ::DEBUG && $self->&LOG('<? FOUND %s := %s', $expr, $found);
                     return $self->&return_value( $found, $env, $kont );
                 } else {
                     return $alloc->Str("Could not find (".$alloc->Util->pprint($expr).") in Env".$alloc->Util->pprint($env)), $env, undef;
@@ -550,8 +551,9 @@ class Interpreter::CEK {
             when ('Cons') {
                 my $head = $alloc->Util->Head($expr);
                 my $tail = $alloc->Util->Tail($expr);
+                ::DEBUG && $self->&LOG('-> EVAL/HEAD %s', $head);
                 return $head, $env, sub ($call, $e) {
-                    ::DEBUG && $self->&LOG('>> EVAL/HEAD %s', $call);
+                    ::DEBUG && $self->&LOG('<- EVAL/HEAD %s ~ %s', $head, $call);
                     return $self->evaluate_args( $call, $tail, $e, $kont )
                 }
             }
@@ -559,9 +561,9 @@ class Interpreter::CEK {
                 my $cond     = $alloc->Util->First($expr);
                 my $if_true  = $alloc->Util->Second($expr);
                 my $if_false = $alloc->Util->Third($expr);
-                ::DEBUG && $self->&LOG('?? COND %s', $cond);
+                ::DEBUG && $self->&LOG('?> COND %s', $cond);
                 return $cond, $env, sub ($result, $e) {
-                    ::DEBUG && $self->&LOG('>> COND %s -> %s', $cond, $result);
+                    ::DEBUG && $self->&LOG('<? COND %s ~ %s', $cond, $result);
                     if ($result isa Bool && $result->is_true) {
                         return $if_true, $e, $kont;
                     } else {
@@ -577,15 +579,17 @@ class Interpreter::CEK {
     }
 
     method evaluate_args ($call, $args, $env, $kont) {
+        ::DEBUG && $self->&LOG('+> EVAL/ARGS %s -> ()', $args);
         my $first = $alloc->Util->Head( $args );
         my $rest  = $alloc->Util->Tail( $args );
         my $done  = $alloc->Nil;
         return $first, $env, sub ($arg, $e) {
             $done = $alloc->Cons( $arg, $done );
-            ::DEBUG && $self->&LOG('+> EVAL/ARGS %s %s', $rest, $done);
             if ($rest->is_nil) {
+                ::DEBUG && $self->&LOG('<+ EVAL/ARGS () <- %s', $done);
                 return $self->apply( $call, $alloc->Util->Reverse( $done ), $env, $kont );
             } else {
+                ::DEBUG && $self->&LOG('<< EVAL/ARGS %s ~ %s', $rest, $done);
                 my $next = $alloc->Util->Head($rest);
                 $rest = $alloc->Util->Tail($rest);
                 return $next, $e, __SUB__;
@@ -594,13 +598,15 @@ class Interpreter::CEK {
     }
 
     method apply ($call, $args, $env, $kont) {
-        ::DEBUG && $self->&LOG('>@ APPLY %s %s', $call, $args);
+        ::DEBUG && $self->&LOG('@> APPLY %s %s', $call, $args);
         given (blessed $call) {
             when ('Builtin') {
+                ::DEBUG && $self->&LOG('@! APPLY/BIF %s %s', $call, $args);
                 my $native = $alloc->deref( $call->index );
                 return $native->( $args ), $env, $kont;
             }
             when ('Lambda') {
+                ::DEBUG && $self->&LOG('@! APPLY/LAMBDA %s %s', $call, $args);
                 my $params = $alloc->Util->First($call);
                 my $body   = $alloc->Util->Second($call);
                 my $local  = $alloc->Util->Third($call);
@@ -627,42 +633,48 @@ my $c = Compiler->new( alloc => $a );
 my $ast = Interpreter::ASTWalker->new( alloc => $a );
 my $cek = Interpreter::CEK->new( alloc => $a );
 
+sub liftBoolBinOp ($a, $op, $f) {
+    my $name = $a->Sym($op);
+    return $name, $a->Builtin( $name, sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Bool( $f->( $n->value, $m->value ) );
+    })
+}
+
+sub liftNumBinOp ($a, $op, $f) {
+    my $name = $a->Sym($op);
+    return $name, $a->Builtin( $name, sub ($args) {
+        my ($n, $m) = $a->Util->Uncons($args);
+        return $a->Num( $f->( $n->value, $m->value ) );
+    })
+}
+
 my $bif = $a->Util->InitEnv(
-    $a->Sym('=='), $a->Builtin( $a->Sym('=='), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Bool( $n->value == $m->value )
-    }),
-    $a->Sym('!='), $a->Builtin( $a->Sym('!='), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Bool( $n->value != $m->value )
-    }),
-    $a->Sym('+'), $a->Builtin( $a->Sym('+'), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Num( $n->value + $m->value )
-    }),
-    $a->Sym('-'), $a->Builtin( $a->Sym('-'), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Num( $n->value - $m->value )
-    }),
-    $a->Sym('*'), $a->Builtin( $a->Sym('*'), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Num( $n->value * $m->value )
-    }),
-    $a->Sym('/'), $a->Builtin( $a->Sym('/'), sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Num( $n->value / $m->value )
-    }),
+    liftBoolBinOp($a, '==', sub ($n, $m) { $n == $m }),
+    liftBoolBinOp($a, '!=', sub ($n, $m) { $n != $m }),
+    liftBoolBinOp($a, '>',  sub ($n, $m) { $n >  $m }),
+    liftBoolBinOp($a, '>=', sub ($n, $m) { $n >= $m }),
+    liftBoolBinOp($a, '<',  sub ($n, $m) { $n <  $m }),
+    liftBoolBinOp($a, '<=', sub ($n, $m) { $n <= $m }),
+
+    liftNumBinOp($a, '+', sub ($n, $m) { $n + $m }),
+    liftNumBinOp($a, '-', sub ($n, $m) { $n - $m }),
+    liftNumBinOp($a, '*', sub ($n, $m) { $n * $m }),
+    liftNumBinOp($a, '/', sub ($n, $m) { $n / $m }),
+    liftNumBinOp($a, '%', sub ($n, $m) { $n / $m }),
 );
 
 my $SOURCE = q[
-
-    (defun adder (x y) (+ x y))
 
     (defun fact (n)
         (if (== n 0) 1
             (* n (fact (- n 1)))))
 
-    (fact 6)
+    (defun fib (n)
+        (if (< n 2) n
+            (+ (fib (- n 1)) (fib (- n 2)))))
+
+    (fact (fib 6))
 ];
 
 say '=' x $TERM_WIDTH;
@@ -689,35 +701,43 @@ say 'COMPILED:';
 say '-' x $TERM_WIDTH;
 say $a->Util->DUMP($_) foreach @$compiled;
 say '=' x $TERM_WIDTH;
-say '';
-say '=' x $TERM_WIDTH;
-{
+
+if ($ENV{AST}) {
+    say '';
+    say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(AST):';
     say '-' x $TERM_WIDTH;
-    my $evaled = $ast->run( $compiled, $e );
+    my $start   = [gettimeofday];
+    my $evaled  = $ast->run( $compiled, $e );
+    my $elapsed = tv_interval ( $start, [gettimeofday]);
     say '=' x $TERM_WIDTH;
-    say 'RESULT(AST):';
+    say sprintf 'RESULT(AST) completed in %f seconds', $elapsed;
     say '-' x $TERM_WIDTH;
     say $a->Util->DUMP($evaled);
     say '=' x $TERM_WIDTH;
 }
-say '';
-say '=' x $TERM_WIDTH;
-{
+
+if ($ENV{CEK}) {
+    say '';
+    say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(CEK)';
     say '-' x $TERM_WIDTH;
+    my $start   = [gettimeofday];
     my $evaled = $cek->run( $compiled, $e );
+    my $elapsed = tv_interval ( $start, [gettimeofday]);
     say '=' x $TERM_WIDTH;
-    say 'RESULT(CEK):';
+    say sprintf 'RESULT(CEK) completed in %f seconds', $elapsed;
     say '-' x $TERM_WIDTH;
     say $a->Util->DUMP($evaled);
     say '=' x $TERM_WIDTH;
 }
-say '';
-say '=' x $TERM_WIDTH;
-say 'MEMORY:';
-say '-' x $TERM_WIDTH;
-say $a->Util->DUMP($_) foreach $a->memory;
-say '=' x $TERM_WIDTH;
 
+if ($ENV{MEM}) {
+    say '';
+    say '=' x $TERM_WIDTH;
+    say 'MEMORY:';
+    say '-' x $TERM_WIDTH;
+    say $a->Util->DUMP($_) foreach $a->memory;
+    say '=' x $TERM_WIDTH;
+}
 ## -----------------------------------------------------------------------------
