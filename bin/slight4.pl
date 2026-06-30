@@ -34,9 +34,9 @@ class Cons    :isa(Term) {} # head, tail
 class Pair    :isa(Cons) {} # Pair is a cons where tail is not a list
 class Env     :isa(Cons) {} # Env is a list of pairs
 
-# compile-time version (w/ compile-time env)
-class Partial :isa(Term) { # params, body, env, name?
-    method has_name { defined $self->data->[3] }
+# compile-time version (w/ out env)
+class Partial :isa(Term) { # params, body, name?
+    method has_name { defined $self->data->[2] }
 }
 
 # runtime-time version (w/ captured runtime env)
@@ -47,6 +47,17 @@ class Lambda  :isa(Term) { # params, body, env, name?
 class Condition :isa(Term) {} # condition, if-true, if-false
 class Builtin   :isa(Term) {} # name, CODE
 
+## -----------------------------------------------------------------------------
+## ALLOCATOR NOTES:
+## -----------------------------------------------------------------------------
+## - in a number of cases I can probably skip inflating objects
+##      - remember, the hash is structural
+##          - and so some things can be compared using only that
+## - the Env helpers are hot paths, look for optimizations
+##      - but not at the cost of correctness
+## - Cons can create improper lists
+##      - ... and other places I need to add type checks
+## - clean up stat keys, they are poorly named
 ## -----------------------------------------------------------------------------
 
 class Allocator::Utils {
@@ -60,7 +71,7 @@ class Allocator::Utils {
             $self->Second($partial), # body
             $env,                    # captured-env
             $partial->has_name       # name?
-                ? $alloc->Util->Fourth($partial)
+                ? $alloc->Util->Third($partial)
                 : ()
         )
     }
@@ -75,11 +86,17 @@ class Allocator::Utils {
 
     method Lookup ($sym, $env) {
         return undef if $env->is_nil;
+        # FIXME:
+        # this is a hot path, and one that
+        # can be done largely with index/hash
+        # comparisons instead of having to
+        # deref things, but this is correct
+        # for now.
         my $candidate = $self->First($env);
         if ($self->First($candidate)->equal_to($sym)) {
             return $self->Second($candidate);
         } else {
-            return $self->Lookup($sym, $self->Rest($env));
+            return $self->Lookup($sym, $self->Second($env));
         }
     }
 
@@ -106,7 +123,6 @@ class Allocator::Utils {
     method Third  ($t) { $alloc->deref_index($t->data->[2]) }
     method Fourth ($t) { $alloc->deref_index($t->data->[3]) }
 
-    method Rest   ($t) { $alloc->deref_index($t->data->[1]) }
     method Head   ($l) { $alloc->deref_index($l->data->[0]) }
     method Tail   ($l) { $alloc->deref_index($l->data->[1]) }
 
@@ -189,6 +205,9 @@ class Allocator::Utils {
 class Index {
     field $idx  :param :reader;
     field $hash :param :reader;
+    # XXX - consider adding equal_to here
+    # maybe make both versions polymophic
+    # so they will work together easily
 }
 
 class Allocator {
@@ -213,6 +232,7 @@ class Allocator {
     method deref_native ($index) { $native{ $index->hash } }
 
     my method intern ($type, @payload) {
+        # NOTE: I know, I know, MD5 is just a placeholder
         my $hash = Digest::MD5::md5_hex(
             join '/' => $type,
                 join ':' =>
@@ -260,8 +280,8 @@ class Allocator {
         $self->&intern( Lambda => $p, $b, $e, $name // () )
     }
 
-    method Partial ($p, $b, $e, $name=undef) {
-        $self->&intern( Partial => $p, $b, $e, $name // () )
+    method Partial ($p, $b, $name=undef) {
+        $self->&intern( Partial => $p, $b, $name // () )
     }
 
     method Builtin ($name, $f) {
@@ -271,6 +291,13 @@ class Allocator {
     }
 }
 
+## -----------------------------------------------------------------------------
+## PARSER TODO:
+## -----------------------------------------------------------------------------
+## - fix string creation (remove the "")
+## - fix number parsing (it's just bad)
+## - improve error handling
+## - track line numbers and char spans (for errors, etc)
 ## -----------------------------------------------------------------------------
 
 class Parser {
@@ -362,6 +389,19 @@ class Parser {
 }
 
 ## -----------------------------------------------------------------------------
+## COMPILER NOTES:
+## -----------------------------------------------------------------------------
+## - consider adding a mutable env (backed by a HASH ref, and parent chain)
+##      - use this for the BIF set
+##      - use this for the compiled env (with BIF set as parent)
+##      - then make Lookup work for both
+##          - possibly adding hot paths for builtins, etc.
+##      - need to think about if it should be hashed and how/where, etc.
+## - consider moving Closure fixup to runtime
+##      - other Closures are created at runtime
+##      - the compiler could leave a Definition Term in place of the `defun`
+##          - the runtime would evaluate it and perform the Closure fixup
+## -----------------------------------------------------------------------------
 
 class Compiler {
     field $alloc :param :reader;
@@ -373,7 +413,6 @@ class Compiler {
     my method current_env { $environs[-1] }
 
     my method fixup_top_level_env {
-        # fixup the top-level env pointers
         my $env = $self->&current_env;
         foreach my $binding (@top_level) {
             my $partial = $alloc->Util->Second( $binding );
@@ -403,12 +442,12 @@ class Compiler {
                     }
                     when ('lambda') {
                         my ($p, $b) = $alloc->Util->Uncons($t);
-                        return $alloc->Partial( $p, $self->compile_expr($b), $self->&current_env );
+                        return $alloc->Partial( $p, $self->compile_expr($b) );
                     }
                     when ('defun') {
                         my ($name, $p, $b) = $alloc->Util->Uncons($t);
                         my $env    = $self->&current_env;
-                        my $lambda = $alloc->Partial( $p, $self->compile_expr($b), $env, $name );
+                        my $lambda = $alloc->Partial( $p, $self->compile_expr($b), $name );
                         push @environs => $alloc->Util->BindSymbol( $name, $lambda, $env );
                         push @top_level => $alloc->Util->First($environs[-1]);
                         return $alloc->Nil;
@@ -427,6 +466,12 @@ class Compiler {
     }
 }
 
+## -----------------------------------------------------------------------------
+## INTERPRETER NOTES
+## -----------------------------------------------------------------------------
+## - Unify error handling between interpreters
+## - consider a "stack allocator" for temporary values (
+##      - especially Cons cells and temp Nums during calculations
 ## -----------------------------------------------------------------------------
 
 class Interpreter::ASTWalker {
@@ -652,6 +697,25 @@ class Interpreter::CEK {
     }
 }
 
+## -----------------------------------------------------------------------------
+## RUNTIME NOTES
+## -----------------------------------------------------------------------------
+## - Create runtime layer to manage:
+##      - the central allocator
+##      - the BIF environment
+##          - and the lift*Op helpers
+##      - parsing/compiling code
+##      - top-level namespace management
+##          - handling loading code from modules, etc.
+##      - running different interpreters
+##          - possibly comparing outputs
+##      - dumping stats, etc.
+## - some other ideas ...
+##      - Add a REPL
+##      - Add a CLI
+##      - Create a test harness and test framework
+##          - create a new "TopLevelEnv" with testing functions in it
+##      - add I/O channels for interpreters to read/write to/from
 ## -----------------------------------------------------------------------------
 
 my $alloc = Allocator->new;
@@ -914,7 +978,7 @@ if ($ENV{STATS}) {
         say sprintf '    | %-9s | %-8d |', $key, $created_by_type->{$key};
     }
     say '    +-----------+----------+';
-    say sprintf '    top requests : (by hash)';
+    say sprintf '  top-K requests : (by hash)';
     my $filtered = 0;
     my @sorted_hashes =
         map {
