@@ -5,6 +5,7 @@ use experimental qw[ class switch ];
 use Data::Dumper qw[ Dumper ];
 use Time::HiRes  qw[ gettimeofday tv_interval ];
 use Sub::Util    qw[ set_subname ];
+use List::Util   qw[ sum ];
 
 use constant DEBUG => $ENV{DEBUG} // 0;
 use Term::ReadKey (); our $TERM_WIDTH = (Term::ReadKey::GetTerminalSize)[0] // 300;
@@ -89,14 +90,14 @@ class Allocator::Utils {
 
     ## ... accessors
 
-    method First  ($t) { $alloc->deindex($t->data->[0]) }
-    method Second ($t) { $alloc->deindex($t->data->[1]) }
-    method Third  ($t) { $alloc->deindex($t->data->[2]) }
-    method Fourth ($t) { $alloc->deindex($t->data->[3]) }
+    method First  ($t) { $alloc->deref_index($t->data->[0]) }
+    method Second ($t) { $alloc->deref_index($t->data->[1]) }
+    method Third  ($t) { $alloc->deref_index($t->data->[2]) }
+    method Fourth ($t) { $alloc->deref_index($t->data->[3]) }
 
-    method Rest   ($t) { $alloc->deindex($t->data->[1]) }
-    method Head   ($l) { $alloc->deindex($l->data->[0]) }
-    method Tail   ($l) { $alloc->deindex($l->data->[1]) }
+    method Rest   ($t) { $alloc->deref_index($t->data->[1]) }
+    method Head   ($l) { $alloc->deref_index($l->data->[0]) }
+    method Tail   ($l) { $alloc->deref_index($l->data->[1]) }
 
     ## ... lists
 
@@ -183,6 +184,12 @@ class Allocator {
     field @memory :reader;
     field %intern :reader;
     field %native :reader;
+    field $stats  :reader = +{
+        hot_request       => 0,
+        cold_request      => 0,
+        requested_by_hash => +{},
+        created_by_type   => +{},
+    };
 
     field $Nil;
     field $True;
@@ -190,8 +197,9 @@ class Allocator {
 
     field $Util :reader;
 
-    method deindex ($index) { $memory[ $index->idx ] }
-    method deref   ($index) { $native{ $index->hash } }
+    method deref_hash   ($hash)  { $memory[ $intern{ $hash }->idx ] }
+    method deref_index  ($index) { $memory[ $index->idx  ] }
+    method deref_native ($index) { $native{ $index->hash } }
 
     my method intern ($type, @payload) {
         my $hash = Digest::MD5::md5_hex(
@@ -199,7 +207,11 @@ class Allocator {
                 join ':' =>
                     map { blessed $_ ? $_->index->hash : $_ } @payload
         );
+        $stats->{hot_request}++;
+        $stats->{requested_by_hash}->{ $hash }++;
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
+        $stats->{created_by_type}->{ $type }++;
+        $stats->{cold_request}++;
         my $index = Index->new( idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
             index => $index,
@@ -429,7 +441,7 @@ class Interpreter::ASTWalker {
         ::DEBUG && $self->&LOG( $depth, 'APPLY %s %s' => $call, $args);
         given (blessed $call) {
             when ('Builtin') {
-                my $native = $alloc->deref( $call->index );
+                my $native = $alloc->deref_native( $call->index );
                 return $native->( $args );
             }
             when ('Lambda') {
@@ -627,7 +639,7 @@ class Interpreter::CEK {
         given (blessed $call) {
             when ('Builtin') {
                 ::DEBUG && $self->&LOG('@! APPLY/BIF %s %s', $call, $args);
-                my $native = $alloc->deref( $call->index );
+                my $native = $alloc->deref_native( $call->index );
                 return $self->&return_value( $native->( $args ), $env, $kont );
             }
             when ('Lambda') {
@@ -649,77 +661,77 @@ class Interpreter::CEK {
 
 ## -----------------------------------------------------------------------------
 
-my $a = Allocator->new;
-my $p = Parser->new( alloc => $a );
-my $c = Compiler->new( alloc => $a );
+my $alloc = Allocator->new;
+my $p = Parser->new( alloc => $alloc );
+my $c = Compiler->new( alloc => $alloc );
 
-my $ast = Interpreter::ASTWalker->new( alloc => $a );
-my $cek = Interpreter::CEK->new( alloc => $a );
+my $ast = Interpreter::ASTWalker->new( alloc => $alloc );
+my $cek = Interpreter::CEK->new( alloc => $alloc );
 
-sub liftBoolBinOp ($a, $op, $f) {
-    my $name = $a->Sym($op);
-    return $name, $a->Builtin( $name, set_subname "/BinOp/Bool/${op}" => sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Bool( $f->( $n->value, $m->value ) );
+sub liftBoolBinOp ($alloc, $op, $f) {
+    my $name = $alloc->Sym($op);
+    return $name, $alloc->Builtin( $name, set_subname "/BinOp/Bool/${op}" => sub ($args) {
+        my ($n, $m) = $alloc->Util->Uncons($args);
+        return $alloc->Bool( $f->( $n->value, $m->value ) );
     })
 }
 
-sub liftNumBinOp ($a, $op, $f) {
-    my $name = $a->Sym($op);
-    return $name, $a->Builtin( $name, set_subname "/BinOp/Num/${op}" => sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
-        return $a->Num( $f->( $n->value, $m->value ) );
+sub liftNumBinOp ($alloc, $op, $f) {
+    my $name = $alloc->Sym($op);
+    return $name, $alloc->Builtin( $name, set_subname "/BinOp/Num/${op}" => sub ($args) {
+        my ($n, $m) = $alloc->Util->Uncons($args);
+        return $alloc->Num( $f->( $n->value, $m->value ) );
     })
 }
 
-sub liftTermBinOp ($a, $op, $f) {
-    my $name = $a->Sym($op);
-    return $name, $a->Builtin( $name, set_subname "/BinOp/*/${op}" => sub ($args) {
-        my ($n, $m) = $a->Util->Uncons($args);
+sub liftTermBinOp ($alloc, $op, $f) {
+    my $name = $alloc->Sym($op);
+    return $name, $alloc->Builtin( $name, set_subname "/BinOp/*/${op}" => sub ($args) {
+        my ($n, $m) = $alloc->Util->Uncons($args);
         return $f->( $n, $m );
     })
 }
 
-sub liftTermUnOp ($a, $op, $f) {
-    my $name = $a->Sym($op);
-    return $name, $a->Builtin( $name, set_subname "/UnOp/*/${op}" => sub ($args) {
-        my $n = $a->Util->Head($args);
+sub liftTermUnOp ($alloc, $op, $f) {
+    my $name = $alloc->Sym($op);
+    return $name, $alloc->Builtin( $name, set_subname "/UnOp/*/${op}" => sub ($args) {
+        my $n = $alloc->Util->Head($args);
         return $f->( $n );
     })
 }
 
-sub liftTermListOp ($a, $op, $f) {
-    my $name = $a->Sym($op);
-    return $name, $a->Builtin( $name, set_subname "/ListOp/*/${op}" => sub ($args) {
-        my @args = $a->Util->Uncons($args);
+sub liftTermListOp ($alloc, $op, $f) {
+    my $name = $alloc->Sym($op);
+    return $name, $alloc->Builtin( $name, set_subname "/ListOp/*/${op}" => sub ($args) {
+        my @args = $alloc->Util->Uncons($args);
         return $f->( @args );
     })
 }
 
-$a->Str("BEFORE BIF CREATION");
+$alloc->Str("BEFORE BIF CREATION");
 
-my $bif = $a->Util->InitEnv(
-    liftBoolBinOp($a, '==', sub ($n, $m) { $n == $m }),
-    liftBoolBinOp($a, '!=', sub ($n, $m) { $n != $m }),
-    liftBoolBinOp($a, '>',  sub ($n, $m) { $n >  $m }),
-    liftBoolBinOp($a, '>=', sub ($n, $m) { $n >= $m }),
-    liftBoolBinOp($a, '<',  sub ($n, $m) { $n <  $m }),
-    liftBoolBinOp($a, '<=', sub ($n, $m) { $n <= $m }),
+my $bif = $alloc->Util->InitEnv(
+    liftBoolBinOp($alloc, '==', sub ($n, $m) { $n == $m }),
+    liftBoolBinOp($alloc, '!=', sub ($n, $m) { $n != $m }),
+    liftBoolBinOp($alloc, '>',  sub ($n, $m) { $n >  $m }),
+    liftBoolBinOp($alloc, '>=', sub ($n, $m) { $n >= $m }),
+    liftBoolBinOp($alloc, '<',  sub ($n, $m) { $n <  $m }),
+    liftBoolBinOp($alloc, '<=', sub ($n, $m) { $n <= $m }),
 
-    liftNumBinOp($a, '+', sub ($n, $m) { $n + $m }),
-    liftNumBinOp($a, '-', sub ($n, $m) { $n - $m }),
-    liftNumBinOp($a, '*', sub ($n, $m) { $n * $m }),
-    liftNumBinOp($a, '/', sub ($n, $m) { $n / $m }),
-    liftNumBinOp($a, '%', sub ($n, $m) { $n % $m }),
+    liftNumBinOp($alloc, '+', sub ($n, $m) { $n + $m }),
+    liftNumBinOp($alloc, '-', sub ($n, $m) { $n - $m }),
+    liftNumBinOp($alloc, '*', sub ($n, $m) { $n * $m }),
+    liftNumBinOp($alloc, '/', sub ($n, $m) { $n / $m }),
+    liftNumBinOp($alloc, '%', sub ($n, $m) { $n % $m }),
 
-    liftTermBinOp($a, 'eq?', sub ($n, $m) { $a->Bool(  $n->equal_to($m) ) }),
-    liftTermBinOp($a, 'ne?', sub ($n, $m) { $a->Bool( !$n->equal_to($m) ) }),
+    liftTermBinOp($alloc, 'eq?', sub ($n, $m) { $alloc->Bool(  $n->equal_to($m) ) }),
+    liftTermBinOp($alloc, 'ne?', sub ($n, $m) { $alloc->Bool( !$n->equal_to($m) ) }),
 
-    liftTermListOp($a, 'list', sub (@items) { $a->Util->ListOf(@items) }),
-    liftTermBinOp ($a, 'cons', sub ($h, $t) { $a->Cons( $h, $t )       }),
-    liftTermUnOp  ($a, 'nil?', sub ($t)     { $a->Bool( $t->is_nil )   }),
-    liftTermUnOp  ($a, 'head', sub ($l)     { $a->Util->Head($l)       }),
-    liftTermUnOp  ($a, 'tail', sub ($l)     { $a->Util->Tail($l)       }),
+    liftTermListOp($alloc, 'list', sub (@items) { $alloc->Util->ListOf(@items) }),
+    liftTermBinOp ($alloc, 'cons', sub ($h, $t) { $alloc->Cons( $h, $t )       }),
+    liftTermUnOp  ($alloc, 'nil?', sub ($t)     { $alloc->Bool( $t->is_nil )   }),
+    liftTermUnOp  ($alloc, 'head', sub ($l)     { $alloc->Util->Head($l)       }),
+    liftTermUnOp  ($alloc, 'tail', sub ($l)     { $alloc->Util->Tail($l)       }),
 );
 
 my $SOURCE = q[
@@ -833,27 +845,27 @@ say '';
 say '=' x $TERM_WIDTH;
 say 'PARSING LOG:';
 say '-' x $TERM_WIDTH;
-$a->Str("BEFORE PARSING");
+$alloc->Str("BEFORE PARSING");
 my $parsed = $p->parse($SOURCE);
 say '-' x $TERM_WIDTH;
 say 'PARSED:';
 say '-' x $TERM_WIDTH;
-say $a->Util->DUMP($_) foreach @$parsed;
+say $alloc->Util->DUMP($_) foreach @$parsed;
 say '=' x $TERM_WIDTH;
 say '';
 say '=' x $TERM_WIDTH;
 say 'COMPILIER LOG:';
 say '-' x $TERM_WIDTH;
-$a->Str("BEFORE COMPILING");
+$alloc->Str("BEFORE COMPILING");
 my ($compiled, $e) = $c->compile( $parsed, $bif );
 say '-' x $TERM_WIDTH;
 say 'COMPILED:';
 say '-' x $TERM_WIDTH;
-say $a->Util->DUMP($_) foreach @$compiled;
+say $alloc->Util->DUMP($_) foreach @$compiled;
 say '=' x $TERM_WIDTH;
 
 if ($ENV{AST}) {
-    $a->Str("BEFORE AST RUNTIME");
+    $alloc->Str("BEFORE AST RUNTIME");
     say '';
     say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(AST):';
@@ -864,12 +876,12 @@ if ($ENV{AST}) {
     say '=' x $TERM_WIDTH;
     say sprintf 'RESULT(AST) completed in %f seconds', $elapsed;
     say '-' x $TERM_WIDTH;
-    say $a->Util->DUMP($evaled);
+    say $alloc->Util->DUMP($evaled);
     say '=' x $TERM_WIDTH;
 }
 
 if ($ENV{CEK}) {
-    $a->Str("BEFORE CEK RUNTIME");
+    $alloc->Str("BEFORE CEK RUNTIME");
     say '';
     say '=' x $TERM_WIDTH;
     say 'RUNNING LOG(CEK)';
@@ -880,18 +892,67 @@ if ($ENV{CEK}) {
     say '=' x $TERM_WIDTH;
     say sprintf 'RESULT(CEK) completed in %f seconds', $elapsed;
     say '-' x $TERM_WIDTH;
-    say $a->Util->DUMP($evaled);
+    say $alloc->Util->DUMP($evaled);
     say '=' x $TERM_WIDTH;
 }
 
-$a->Str("THE END");
+$alloc->Str("THE END");
+
+if ($ENV{STATS}) {
+    say '';
+    say '=' x $TERM_WIDTH;
+    say 'STATS:';
+    say '-' x $TERM_WIDTH;
+    my $stats = $alloc->stats;
+
+    my $hot_request       = $stats->{hot_request};
+    my $cold_request      = $stats->{cold_request};
+    my $requested_by_hash = $stats->{requested_by_hash};
+    my $created_by_type   = $stats->{created_by_type};
+
+    say sprintf '  total_requests : %d' => $hot_request;
+    say sprintf '  total_created  : %d' => $cold_request;
+    say sprintf '  total created  : (by type)';
+    my @sorted_types = sort { $created_by_type->{$b} <=> $created_by_type->{$a} } keys $created_by_type->%*;
+    say '    +-----------+----------+';
+    say '    | type      | count    |';
+    say '    +-----------+----------+';
+    foreach my $key (@sorted_types) {
+        say sprintf '    | %-9s | %-8d |', $key, $created_by_type->{$key};
+    }
+    say '    +-----------+----------+';
+    say sprintf '    top requests : (by hash)';
+    my $filtered = 0;
+    my @sorted_hashes =
+        map {
+            if ($requested_by_hash->{$_} < 10) {
+                $filtered++;
+                ();
+            } else {
+                $_
+            }
+        }
+        sort { $requested_by_hash->{$b} <=> $requested_by_hash->{$a} }
+        keys $requested_by_hash->%*;
+    say '    +--------+----------+';
+    say '    | hash   | count    |';
+    say '    +--------+----------+';
+    foreach my $hash (@sorted_hashes) {
+        say sprintf '    | %s | %-8d | %s', substr($hash, 0, 6), $requested_by_hash->{$hash}, substr($alloc->Util->pprint($alloc->deref_hash($hash)), 0, $TERM_WIDTH - 26);
+    }
+    say         '    +--------+----------+';
+    say sprintf '    |  < 10  | %-8d |' => $filtered;
+    say         '    +--------+----------+';
+    say '=' x $TERM_WIDTH;
+}
 
 if ($ENV{DUMP_MEMORY}) {
     say '';
     say '=' x $TERM_WIDTH;
     say 'MEMORY:';
     say '-' x $TERM_WIDTH;
-    say $a->Util->DUMP($_) foreach $a->memory;
+    say $alloc->Util->DUMP($_) foreach $alloc->memory;
     say '=' x $TERM_WIDTH;
 }
+
 ## -----------------------------------------------------------------------------
