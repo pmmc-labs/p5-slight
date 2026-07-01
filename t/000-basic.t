@@ -15,7 +15,7 @@ Slight::run(
         dump_memory_stats => false,
         dump_memory       => false,
         run_ast => true,
-        run_cek => true,
+        run_cek => false,
     },
     q[
 

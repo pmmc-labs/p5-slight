@@ -88,6 +88,10 @@ class Allocator {
     method Pair ($f, $s) { $self->&intern( Pair => $f, $s ) }
     method Env  ($p, $r) { $self->&intern( Env  => $p, $r ) }
 
+    method Binding ($s, $t) {
+        $self->&intern( Binding => $s, $t )
+    }
+
     method Condition ($c, $t, $f) {
         $self->&intern( Condition => $c, $t, $f )
     }

@@ -22,7 +22,7 @@ class Allocator::Utils {
     method InitEnv (@bindings) {
         my $env = $alloc->Nil;
         foreach my ($sym, $val) (@bindings) {
-            $env = $alloc->Env( $alloc->Pair( $sym, $val ), $env );
+            $env = $alloc->Env( $alloc->Binding( $sym, $val ), $env );
         }
         return $env;
     }
@@ -40,7 +40,7 @@ class Allocator::Utils {
     }
 
     method BindSymbol ($sym, $val, $env) {
-        $alloc->Env( $alloc->Pair( $sym, $val ), $env )
+        $alloc->Env( $alloc->Binding( $sym, $val ), $env )
     }
 
     method BindParams ($params, $args, $env) {
@@ -105,6 +105,7 @@ class Allocator::Utils {
             when ('Pair')    { sprintf '(%s . %s)' => $self->pprint($self->First($t)), $self->pprint($self->Second($t)) }
             when ('Env')     { sprintf '{ %s }' => join ' ' => map $self->pprint($_), $alloc->Util->Uncons($t) }
             when ('Builtin') { sprintf '<%s>' => $self->pprint($self->First($t)) }
+            when ('Binding') { sprintf '(%s := %s)' => $self->pprint($self->First($t)), $self->pprint($self->Second($t)) }
             when ('Partial')  {
                 sprintf '[<lambda> %s %s]' =>
                     $self->pprint($self->First($t)),

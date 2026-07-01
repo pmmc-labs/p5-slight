@@ -50,7 +50,6 @@ sub run ($config, $source) {
     my $bifs             = init_builtins($alloc);
     my ($compiled, $env) = $compiler->compile( $parsed, $bifs );
 
-
     DUMP_PARSER($alloc, $source, $parsed)  if $config->{dump_parser};
     DUMP_COMPILER($alloc, $compiled, $env) if $config->{dump_compiler};
 

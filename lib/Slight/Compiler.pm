@@ -6,7 +6,8 @@ use experimental qw[ class switch ];
 ## -----------------------------------------------------------------------------
 ## COMPILER NOTES:
 ## -----------------------------------------------------------------------------
-## - BUG! ... defun should not be allowed at the top level
+## - BUG! ... defun should not be allowed outside the top level
+## -----------------------------------------------------------------------------
 ## - consider adding a mutable env (backed by a HASH ref, and parent chain)
 ##      - use this for the BIF set
 ##      - use this for the compiled env (with BIF set as parent)

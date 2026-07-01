@@ -22,6 +22,7 @@ class Nil     :isa(Term) { method is_nil { true } }
 class Cons    :isa(Term) {} # head, tail
 class Pair    :isa(Cons) {} # Pair is a cons where tail is not a list
 class Env     :isa(Cons) {} # Env is a list of pairs
+class Binding :isa(Cons) {} # Pair of Symbol + Term
 
 # compile-time version (w/ out env)
 class Partial :isa(Term) { # params, body, name?
