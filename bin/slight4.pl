@@ -208,10 +208,10 @@ class Allocator {
     field %intern :reader;
     field %native :reader;
     field $stats  :reader = +{
-        total_requests    => 0,
-        total_fulfilled   => 0,
-        requested_by_hash => +{},
-        created_by_type   => +{},
+        total_requests   => 0,
+        total_created    => 0,
+        requests_by_hash => +{},
+        created_by_type  => +{},
     };
 
     field $Nil;
@@ -232,10 +232,10 @@ class Allocator {
                     map { blessed $_ ? $_->index->hash : $_ } @payload
         );
         $stats->{total_requests}++;
-        $stats->{requested_by_hash}->{ $hash }++;
+        $stats->{requests_by_hash}->{ $hash }++;
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
         $stats->{created_by_type}->{ $type }++;
-        $stats->{total_fulfilled}++;
+        $stats->{total_created}++;
         my $index = Index->new( idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
             index => $index,
@@ -956,13 +956,13 @@ if ($ENV{STATS}) {
     say '-' x $TERM_WIDTH;
     my $stats = $alloc->stats;
 
-    my $total_requests       = $stats->{total_requests};
-    my $total_fulfilled      = $stats->{total_fulfilled};
-    my $requested_by_hash = $stats->{requested_by_hash};
-    my $created_by_type   = $stats->{created_by_type};
+    my $total_requests   = $stats->{total_requests};
+    my $total_created    = $stats->{total_created};
+    my $requests_by_hash = $stats->{requests_by_hash};
+    my $created_by_type  = $stats->{created_by_type};
 
     say sprintf '  total_requests : %d' => $total_requests;
-    say sprintf '  total_created  : %d' => $total_fulfilled;
+    say sprintf '  total_created  : %d' => $total_created;
     say sprintf '  total created  : (by type)';
     my @sorted_types = sort { $created_by_type->{$b} <=> $created_by_type->{$a} } keys $created_by_type->%*;
     say '    +-----------+----------+';
@@ -976,20 +976,20 @@ if ($ENV{STATS}) {
     my $filtered = 0;
     my @sorted_hashes =
         map {
-            if ($requested_by_hash->{$_} < 10) {
+            if ($requests_by_hash->{$_} < 10) {
                 $filtered++;
                 ();
             } else {
                 $_
             }
         }
-        sort { $requested_by_hash->{$b} <=> $requested_by_hash->{$a} }
-        keys $requested_by_hash->%*;
+        sort { $requests_by_hash->{$b} <=> $requests_by_hash->{$a} }
+        keys $requests_by_hash->%*;
     say '    +--------+----------+';
     say '    | hash   | count    |';
     say '    +--------+----------+';
     foreach my $hash (@sorted_hashes) {
-        say sprintf '    | %s | %-8d | %s', substr($hash, 0, 6), $requested_by_hash->{$hash}, substr($alloc->Util->pprint($alloc->deref_hash($hash)), 0, $TERM_WIDTH - 26);
+        say sprintf '    | %s | %-8d | %s', substr($hash, 0, 6), $requests_by_hash->{$hash}, substr($alloc->Util->pprint($alloc->deref_hash($hash)), 0, $TERM_WIDTH - 26);
     }
     say         '    +--------+----------+';
     say sprintf '    |  < 10  | %-8d |' => $filtered;
