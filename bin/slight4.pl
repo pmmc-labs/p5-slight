@@ -86,12 +86,8 @@ class Allocator::Utils {
 
     method Lookup ($sym, $env) {
         return undef if $env->is_nil;
-        # FIXME:
-        # this is a hot path, and one that
-        # can be done largely with index/hash
-        # comparisons instead of having to
-        # deref things, but this is correct
-        # for now.
+        # XXX - this is a hot path and will need
+        # some optimizations to speed it up
         my $candidate = $self->First($env);
         if ($self->First($candidate)->equal_to($sym)) {
             return $self->Second($candidate);
@@ -205,9 +201,6 @@ class Allocator::Utils {
 class Index {
     field $idx  :param :reader;
     field $hash :param :reader;
-    # XXX - consider adding equal_to here
-    # maybe make both versions polymophic
-    # so they will work together easily
 }
 
 class Allocator {
@@ -215,8 +208,8 @@ class Allocator {
     field %intern :reader;
     field %native :reader;
     field $stats  :reader = +{
-        hot_request       => 0,
-        cold_request      => 0,
+        total_requests    => 0,
+        total_fulfilled   => 0,
         requested_by_hash => +{},
         created_by_type   => +{},
     };
@@ -238,11 +231,11 @@ class Allocator {
                 join ':' =>
                     map { blessed $_ ? $_->index->hash : $_ } @payload
         );
-        $stats->{hot_request}++;
+        $stats->{total_requests}++;
         $stats->{requested_by_hash}->{ $hash }++;
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
         $stats->{created_by_type}->{ $type }++;
-        $stats->{cold_request}++;
+        $stats->{total_fulfilled}++;
         my $index = Index->new( idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
             index => $index,
@@ -391,6 +384,7 @@ class Parser {
 ## -----------------------------------------------------------------------------
 ## COMPILER NOTES:
 ## -----------------------------------------------------------------------------
+## - BUG! ... defun should not be allowed at the top level
 ## - consider adding a mutable env (backed by a HASH ref, and parent chain)
 ##      - use this for the BIF set
 ##      - use this for the compiled env (with BIF set as parent)
@@ -962,13 +956,13 @@ if ($ENV{STATS}) {
     say '-' x $TERM_WIDTH;
     my $stats = $alloc->stats;
 
-    my $hot_request       = $stats->{hot_request};
-    my $cold_request      = $stats->{cold_request};
+    my $total_requests       = $stats->{total_requests};
+    my $total_fulfilled      = $stats->{total_fulfilled};
     my $requested_by_hash = $stats->{requested_by_hash};
     my $created_by_type   = $stats->{created_by_type};
 
-    say sprintf '  total_requests : %d' => $hot_request;
-    say sprintf '  total_created  : %d' => $cold_request;
+    say sprintf '  total_requests : %d' => $total_requests;
+    say sprintf '  total_created  : %d' => $total_fulfilled;
     say sprintf '  total created  : (by type)';
     my @sorted_types = sort { $created_by_type->{$b} <=> $created_by_type->{$a} } keys $created_by_type->%*;
     say '    +-----------+----------+';
