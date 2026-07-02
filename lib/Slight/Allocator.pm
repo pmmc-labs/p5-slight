@@ -19,6 +19,8 @@ class Index {
     field $idx  :param :reader;
     field $hash :param :reader;
     field $type :param :reader;
+
+    method index { $self }
 }
 
 class Allocator {
@@ -38,9 +40,10 @@ class Allocator {
 
     field $Util :reader;
 
-    method deref_hash   ($hash)  { $memory[ $intern{ $hash }->idx ] }
-    method deref_index  ($index) { $memory[ $index->idx  ] }
-    method deref_native ($index) { $native{ $index->hash } }
+    method deref_native   ($index)    { $native{ $index->hash } }
+    method deref_hash     ($hash)     { $memory[ $intern{ $hash }->idx ] }
+    method deref_index    ($index)    { $memory[ $index->idx  ] }
+    method deref_indicies (@indicies) { @memory[ map $_->idx, @indicies ] }
 
     my method intern ($type, @payload) {
         # NOTE: I know, I know, MD5 is just a placeholder

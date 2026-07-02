@@ -8,17 +8,6 @@ class Allocator::Utils {
 
     ## ... environs
 
-    method CaptureClosure ($partial, $env) {
-        return $alloc->Lambda(
-            $self->First($partial),  # params
-            $self->Second($partial), # body
-            $env,                    # captured-env
-            $partial->has_name       # name?
-                ? $alloc->Util->Third($partial)
-                : ()
-        )
-    }
-
     method InitEnv (@bindings) {
         my $env = $alloc->Nil;
         foreach my ($sym, $val) (@bindings) {
@@ -29,28 +18,36 @@ class Allocator::Utils {
 
     method Lookup ($sym, $env) {
         until ($env->is_nil) {
-            my $binding = $self->First($env);
-            return $self->Second($binding)
+            my $binding = $alloc->deref_index($env->data->[0]);
+            return $alloc->deref_index($binding->data->[1])
                 if $binding->data->[0]->hash eq $sym->index->hash;
-            $env = $self->Second($env);
+            $env = $alloc->deref_index($env->data->[1]);
         }
         return undef;
+    }
+
+    method BindParams ($params, $args, $env) {
+        my $local = $env;
+        until ($params->is_nil || $args->is_nil) {
+            $local = $alloc->Env( $alloc->Binding( $params->data->[0], $args->data->[0] ), $local );
+            ($params, $args) = $alloc->deref_indicies( $params->data->[1], $args->data->[1] );
+        }
+        die "Arity Mismatch - missing args: ".$self->pprint($params)
+            unless $params->is_nil;
+        die "Arity Mismatch - extra args: ".$self->pprint($args)
+            unless $args->is_nil;
+        return $local;
     }
 
     method BindSymbol ($sym, $val, $env) {
         $alloc->Env( $alloc->Binding( $sym, $val ), $env )
     }
 
-    method BindParams ($params, $args, $env) {
-        my @params = $alloc->Util->Uncons($params);
-        my @args   = $alloc->Util->Uncons($args);
-        die sprintf 'Arity mismatch, got(%s) expected(%s)' => (scalar @args), (scalar @params)
-            unless scalar @args == scalar @params;
-        my $local = $env;
-        while (@params) {
-            $local = $self->BindSymbol( shift @params, shift @args, $local )
-        }
-        return $local;
+    ## ... closures
+
+    method CaptureClosure ($partial, $env) {
+        my ($params, $body, $name) = $alloc->deref_indicies( $partial->data->@* );
+        return $alloc->Lambda( $params, $body, $env, $name // () )
     }
 
     ## ... accessors
@@ -76,18 +73,11 @@ class Allocator::Utils {
     method Uncons ($list) {
         my @list;
         until ($list->is_nil) {
-            push @list => $self->Head( $list );
-            $list = $self->Tail( $list );
+            my $head;
+            ($head, $list) = $alloc->deref_indicies( $list->data->@* );
+            push @list => $head;
         }
         return @list;
-    }
-
-    method Reverse ($list) {
-        return $self->ListOf( reverse $self->Uncons( $list ) )
-    }
-
-    method Append ($lhs, $rhs) {
-        $self->ListOf( $self->Uncons( $lhs ), $self->Uncons( $rhs ) )
     }
 
     ## ... printing and debugging
