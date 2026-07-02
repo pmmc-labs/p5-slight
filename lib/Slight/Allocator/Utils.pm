@@ -28,15 +28,13 @@ class Allocator::Utils {
     }
 
     method Lookup ($sym, $env) {
-        return undef if $env->is_nil;
-        # XXX - this is a hot path and will need
-        # some optimizations to speed it up
-        my $candidate = $self->First($env);
-        if ($self->First($candidate)->equal_to($sym)) {
-            return $self->Second($candidate);
-        } else {
-            return $self->Lookup($sym, $self->Second($env));
+        until ($env->is_nil) {
+            my $binding = $self->First($env);
+            return $self->Second($binding)
+                if $binding->data->[0]->hash eq $sym->index->hash;
+            $env = $self->Second($env);
         }
+        return undef;
     }
 
     method BindSymbol ($sym, $val, $env) {

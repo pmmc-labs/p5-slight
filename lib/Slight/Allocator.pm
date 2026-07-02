@@ -11,14 +11,8 @@ use Slight::Allocator::Utils;
 ## -----------------------------------------------------------------------------
 ## ALLOCATOR NOTES:
 ## -----------------------------------------------------------------------------
-## - in a number of cases I can probably skip inflating objects
-##      - remember, the hash is structural
-##          - and so some things can be compared using only that
-## - the Env helpers are hot paths, look for optimizations
-##      - but not at the cost of correctness
 ## - Cons can create improper lists
 ##      - ... and other places I need to add type checks
-## - clean up stat keys, they are poorly named
 ## -----------------------------------------------------------------------------
 
 class Index {
