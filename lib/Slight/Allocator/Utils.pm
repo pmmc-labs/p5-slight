@@ -84,6 +84,7 @@ class Allocator::Utils {
 
     method pprint ($t) {
         given (blessed $t) {
+            when ('Tag')     { $t->ident }
             when ('Sym')     { $t->ident }
             when ('Str')     { $t->value }
             when ('Num')     { $t->value }

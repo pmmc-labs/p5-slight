@@ -11,6 +11,7 @@ class Term {
     method short_hash { substr($index->hash, 0, 6) }
 }
 
+class Tag     :isa(Term) { method ident { $self->data->[0] } }
 class Sym     :isa(Term) { method ident { $self->data->[0] } }
 class Str     :isa(Term) { method value { $self->data->[0] } }
 class Num     :isa(Term) { method value { $self->data->[0] } }

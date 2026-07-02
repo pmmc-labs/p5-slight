@@ -79,6 +79,7 @@ class Allocator {
     method False { $False }
 
     method Bool ($value) { $value ? $True : $False }
+    method Tag  ($ident) { $self->&intern( Tag  => $ident ) }
     method Sym  ($ident) { $self->&intern( Sym  => $ident ) }
     method Num  ($value) { $self->&intern( Num  => $value ) }
     method Str  ($value) { $self->&intern( Str  => $value ) }
