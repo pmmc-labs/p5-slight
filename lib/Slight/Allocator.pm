@@ -24,6 +24,7 @@ use Slight::Allocator::Utils;
 class Index {
     field $idx  :param :reader;
     field $hash :param :reader;
+    field $type :param :reader;
 }
 
 class Allocator {
@@ -59,7 +60,7 @@ class Allocator {
         return $memory[ $intern{ $hash }->idx ] if exists $intern{ $hash };
         $stats->{created_by_type}->{ $type }++;
         $stats->{total_created}++;
-        my $index = Index->new( idx => (scalar @memory), hash => $hash );
+        my $index = Index->new( type => $type, idx => (scalar @memory), hash => $hash );
         my $value = $type->new(
             index => $index,
             data  => [ map { blessed $_ ? $_->index : $_ } @payload ]
