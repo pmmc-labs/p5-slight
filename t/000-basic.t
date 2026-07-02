@@ -9,13 +9,14 @@ use Slight;
 
 Slight::run(
     {
-        dump_parser       => false,
-        dump_compiler     => false,
+        dump_parser       => !!$ENV{DEBUG},
+        dump_compiler     => !!$ENV{DEBUG},
         dump_results      => true,
-        dump_memory_stats => false,
-        dump_memory       => false,
-        run_ast => true,
-        run_cek => true,
+        dump_memory_stats => !!$ENV{MEMORY},
+        dump_memory       => !!$ENV{MEMORY_DUMP},
+        run_ast  => !!$ENV{AST},
+        run_cek  => !!$ENV{CEK},
+        run_kont => !!$ENV{KONT},
     },
     q[
 

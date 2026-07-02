@@ -14,10 +14,6 @@ use experimental qw[ class switch ];
 ##      - then make Lookup work for both
 ##          - possibly adding hot paths for builtins, etc.
 ##      - need to think about if it should be hashed and how/where, etc.
-## - consider moving Closure fixup to runtime
-##      - other Closures are created at runtime
-##      - the compiler could leave a Definition Term in place of the `defun`
-##          - the runtime would evaluate it and perform the Closure fixup
 ## -----------------------------------------------------------------------------
 
 class Compiler {

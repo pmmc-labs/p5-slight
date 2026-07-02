@@ -19,6 +19,7 @@ use Slight::Compiler;
 
 use Slight::Interpreter::ASTWalker;
 use Slight::Interpreter::CEK;
+use Slight::Interpreter::Kontinue;
 
 ## -----------------------------------------------------------------------------
 ## RUNTIME NOTES
@@ -67,10 +68,17 @@ sub run ($config, $source) {
         DUMP_RESULT($alloc, CEK => $cek_result, $elapsed) if $config->{dump_results};
     }
 
+    my $kont_result;
+    if ($config->{run_kont}) {
+        my $elapsed;
+        ($kont_result, $elapsed) = run_Kontinue( $alloc, $compiled, $env );
+        DUMP_RESULT($alloc, KONT => $kont_result, $elapsed) if $config->{dump_results};
+    }
+
     DUMP_MEMORY_STATS($alloc) if $config->{dump_memory_stats};
     DUMP_MEMORY($alloc)       if $config->{dump_memory};
 
-    return grep defined $_, ($ast_result, $cek_result)
+    return grep defined $_, ($ast_result, $cek_result, $kont_result)
 }
 
 sub run_ASTWalker ($alloc, $compiled, $env) {
@@ -85,6 +93,14 @@ sub run_CEK ($alloc, $compiled, $env) {
     my $cek     = Interpreter::CEK->new( alloc => $alloc );
     my $start   = [gettimeofday];
     my $evaled  = $cek->run( $compiled, $env );
+    my $elapsed = tv_interval ( $start, [gettimeofday]);
+    return $evaled, $elapsed;
+}
+
+sub run_Kontinue ($alloc, $compiled, $env) {
+    my $kont    = Interpreter::Kontinue->new( alloc => $alloc );
+    my $start   = [gettimeofday];
+    my $evaled  = $kont->run( $compiled, $env );
     my $elapsed = tv_interval ( $start, [gettimeofday]);
     return $evaled, $elapsed;
 }
@@ -211,26 +227,16 @@ sub DUMP_MEMORY_STATS ($alloc) {
     }
     say '    +-----------+----------+';
     say sprintf '  top-K requests : (by hash)';
-    my $filtered = 0;
-    my @sorted_hashes =
-        map {
-            if ($requests_by_hash->{$_} < 10) {
-                $filtered++;
-                ();
-            } else {
-                $_
-            }
-        }
-        sort { $requests_by_hash->{$b} <=> $requests_by_hash->{$a} }
-        keys $requests_by_hash->%*;
+    my @sorted_hashes = sort { $requests_by_hash->{$b} <=> $requests_by_hash->{$a} } keys $requests_by_hash->%*;
+    my $filtered = scalar(@sorted_hashes) - 10;
     say '    +--------+----------+';
     say '    | hash   | count    |';
     say '    +--------+----------+';
-    foreach my $hash (@sorted_hashes) {
+    foreach my $hash (@sorted_hashes[ 0 .. 10 ]) {
         say sprintf '    | %s | %-8d | %s', substr($hash, 0, 6), $requests_by_hash->{$hash}, substr($alloc->Util->pprint($alloc->deref_hash($hash)), 0, $TERM_WIDTH - 26);
     }
     say         '    +--------+----------+';
-    say sprintf '    |  < 10  | %-8d |' => $filtered;
+    say sprintf '    |  ....  | %-8d |' => $filtered;
     say         '    +--------+----------+';
     say '=' x $TERM_WIDTH;
 }
