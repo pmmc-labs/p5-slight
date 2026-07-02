@@ -9,9 +9,6 @@ class Interpreter::CEK {
     field $steps :reader = 0;
 
     my method LOG ($fmt, @args) {
-        #my $indent = '';
-        #my $depth  = 0;
-        #1 while caller( ++$depth );
         say sprintf("%05d | ${fmt}", $steps, map {
                 blessed $_
                     ? $_ isa Env
@@ -95,14 +92,15 @@ class Interpreter::CEK {
         Slight::DEBUG && $self->&LOG('+> EVAL/ARGS %s -> ()', $args);
         my $first = $alloc->Util->Head( $args );
         my $rest  = $alloc->Util->Tail( $args );
-        my $done  = $alloc->Nil;
+        my @done;
         return $first, $env, sub ($arg, $e) {
-            $done = $alloc->Cons( $arg, $done );
+            push @done => $arg;
             if ($rest->is_nil) {
+                my $done = $alloc->Util->ListOf( @done );
                 Slight::DEBUG && $self->&LOG('<+ EVAL/ARGS () <- %s', $done);
-                return $self->apply( $call, $alloc->Util->Reverse( $done ), $env, $kont );
+                return $self->apply( $call, $done, $env, $kont );
             } else {
-                Slight::DEBUG && $self->&LOG('<< EVAL/ARGS %s ~ %s', $rest, $done);
+                Slight::DEBUG && $self->&LOG('<< EVAL/ARGS %s ~ %s', $rest, join ', ' => map $alloc->Util->pprint($_), @done);
                 my $next = $alloc->Util->Head($rest);
                 $rest = $alloc->Util->Tail($rest);
                 return $next, $e, __SUB__;

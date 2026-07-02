@@ -10,6 +10,7 @@ use List::Util   qw[ sum ];
 
 use constant DEBUG => $ENV{DEBUG} // 0;
 
+use Memory::Stats ();
 use Term::ReadKey ();
 our $TERM_WIDTH = (Term::ReadKey::GetTerminalSize)[0] // 300;
 
@@ -43,12 +44,17 @@ use Slight::Interpreter::Kontinue;
 ## -----------------------------------------------------------------------------
 
 sub run ($config, $source) {
+    my $mu       = $config->{memory_usage} ? Memory::Stats->new : undef;
     my $alloc    = Allocator->new;
     my $parser   = Parser->new( alloc => $alloc );
     my $compiler = Compiler->new( alloc => $alloc );
 
+    $mu && $mu->start;
+    $mu && $mu->checkpoint('before parsing');
     my $parsed           = $parser->parse( $source );
+    $mu && $mu->checkpoint('before builtin');
     my $bifs             = init_builtins($alloc);
+    $mu && $mu->checkpoint('before compile');
     my ($compiled, $env) = $compiler->compile( $parsed, $bifs );
 
     DUMP_PARSER($alloc, $source, $parsed)  if $config->{dump_parser};
@@ -57,50 +63,59 @@ sub run ($config, $source) {
     my $ast_result;
     if ($config->{run_ast}) {
         my $elapsed;
-        ($ast_result, $elapsed) = run_ASTWalker( $alloc, $compiled, $env );
+        ($ast_result, $elapsed) = run_ASTWalker( $alloc, $compiled, $env, $mu );
         DUMP_RESULT($alloc, AST => $ast_result, $elapsed) if $config->{dump_results};
     }
 
     my $cek_result;
     if ($config->{run_cek}) {
         my $elapsed;
-        ($cek_result, $elapsed) = run_CEK( $alloc, $compiled, $env );
+        ($cek_result, $elapsed) = run_CEK( $alloc, $compiled, $env, $mu );
         DUMP_RESULT($alloc, CEK => $cek_result, $elapsed) if $config->{dump_results};
     }
 
     my $kont_result;
     if ($config->{run_kont}) {
         my $elapsed;
-        ($kont_result, $elapsed) = run_Kontinue( $alloc, $compiled, $env );
+        ($kont_result, $elapsed) = run_Kontinue( $alloc, $compiled, $env, $mu );
         DUMP_RESULT($alloc, KONT => $kont_result, $elapsed) if $config->{dump_results};
     }
 
+    $mu && $mu->stop;
+
+    DUMP_MEMORY_USAGE($mu)    if $mu;
     DUMP_MEMORY_STATS($alloc) if $config->{dump_memory_stats};
     DUMP_MEMORY($alloc)       if $config->{dump_memory};
 
     return grep defined $_, ($ast_result, $cek_result, $kont_result)
 }
 
-sub run_ASTWalker ($alloc, $compiled, $env) {
+sub run_ASTWalker ($alloc, $compiled, $env, $mu) {
     my $ast     = Interpreter::ASTWalker->new( alloc => $alloc );
     my $start   = [gettimeofday];
+    $mu && $mu->checkpoint('before AST ...');
     my $evaled  = $ast->run( $compiled, $env );
+    $mu && $mu->checkpoint('>after AST ...');
     my $elapsed = tv_interval ( $start, [gettimeofday]);
     return $evaled, $elapsed;
 }
 
-sub run_CEK ($alloc, $compiled, $env) {
+sub run_CEK ($alloc, $compiled, $env, $mu) {
     my $cek     = Interpreter::CEK->new( alloc => $alloc );
     my $start   = [gettimeofday];
+    $mu && $mu->checkpoint('before CEK ...');
     my $evaled  = $cek->run( $compiled, $env );
+    $mu && $mu->checkpoint('>after CEK ...');
     my $elapsed = tv_interval ( $start, [gettimeofday]);
     return $evaled, $elapsed;
 }
 
-sub run_Kontinue ($alloc, $compiled, $env) {
+sub run_Kontinue ($alloc, $compiled, $env, $mu) {
     my $kont    = Interpreter::Kontinue->new( alloc => $alloc );
     my $start   = [gettimeofday];
+    $mu && $mu->checkpoint('before KONT...');
     my $evaled  = $kont->run( $compiled, $env );
+    $mu && $mu->checkpoint('>after KONT...');
     my $elapsed = tv_interval ( $start, [gettimeofday]);
     return $evaled, $elapsed;
 }
@@ -200,6 +215,13 @@ sub DUMP_RESULT ($alloc, $type, $result, $elapsed) {
     say sprintf 'GOT RESULT(%s) completed in %f seconds', $type, $elapsed;
     say '-' x $TERM_WIDTH;
     say $alloc->Util->DUMP($result);
+    say '=' x $TERM_WIDTH;
+}
+
+sub DUMP_MEMORY_USAGE ($mu) {
+    say '';
+    say '=' x $TERM_WIDTH;
+    $mu->report;
     say '=' x $TERM_WIDTH;
 }
 

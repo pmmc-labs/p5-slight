@@ -14,6 +14,7 @@ Slight::run(
         dump_results      => true,
         dump_memory_stats => !!$ENV{MEMORY},
         dump_memory       => !!$ENV{MEMORY_DUMP},
+        memory_usage      => !!$ENV{MEMORY_USAGE},
         run_ast  => !!$ENV{AST},
         run_cek  => !!$ENV{CEK},
         run_kont => !!$ENV{KONT},
@@ -120,3 +121,5 @@ Slight::run(
         "<- all done!"
     )
 ]);
+
+

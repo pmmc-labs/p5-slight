@@ -3,19 +3,18 @@ use utf8;
 use open ':std', ':encoding(UTF-8)';
 use experimental qw[ class switch ];
 
-
 class Context {
     field $alloc :param :reader;
     field $env   :param :reader;
 }
 
+## -----------------------------------------------------------------------------
+
 class Kontinue {
     field $ctx  :param :reader;
     field $kont :param :reader = undef;
 
-    method kontinue {
-        ...
-    }
+    method kontinue { ... }
 
     method LOG ($fmt, @args) {
         @args = map {
@@ -157,12 +156,15 @@ class Eval::Args :isa(Kontinue) {
                 ctx   => $self->ctx
             )
         } else {
-            my $next = $self->ctx->alloc->Util->Head($args);
-            $args = $self->ctx->alloc->Util->Tail($args);
             return Eval::Expr->new(
-                expr => $next,
-                kont => $self,
+                expr => $self->ctx->alloc->Util->Head($args),
                 ctx  => $self->ctx,
+                kont => Eval::Args->new(
+                    args => $self->ctx->alloc->Util->Tail($args),
+                    done => $done,
+                    kont => $self->kont,
+                    ctx  => $self->ctx,
+                ),
             )
         }
     }
@@ -250,10 +252,12 @@ class Bind :isa(Kontinue) {
     }
 }
 
+## -----------------------------------------------------------------------------
+
 class Interpreter::Kontinue {
     field $alloc :param :reader;
 
-    field @trace :reader;
+    field $prev;
 
     method run ($exprs, $env) {
         my $ctx   = Context->new( alloc => $alloc, env => $env );
@@ -275,10 +279,10 @@ class Interpreter::Kontinue {
 
     method step ($kont) {
         do {
-            push @trace => $kont;
+            $prev = $kont;
             $kont = $kont->kontinue;
         } while defined $kont;
-        return $trace[-1]->value;
+        return $prev->value;
     }
 }
 
